@@ -1,0 +1,12 @@
+streamlit
+langchain
+langchain-community
+langchain-text-splitters
+sentence-transformers
+faiss-cpu
+datasets
+ollama
+openai
+requests
+beautifulsoup4
+python-dotenv

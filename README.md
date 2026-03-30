@@ -1,4 +1,4 @@
-# SAP Ticket Resolver
+# SAP AI
 
 Streamlit app for SAP ticket triage across `DEV`, `QA`, `TEST`, and `PROD`.
 
@@ -14,7 +14,7 @@ Streamlit app for SAP ticket triage across `DEV`, `QA`, `TEST`, and `PROD`.
 ## Files
 
 - `ui.py`: Streamlit frontend
-- `app.py`: Core SAP ticket resolver
+- `app.py`: Core SAP AI resolver
 - `sap_ticket_catalog.py`: Structured SAP runbook catalog
 - `tools.py`: LangChain tool wrappers
 - `agent.py`: Optional LangChain agent entry point

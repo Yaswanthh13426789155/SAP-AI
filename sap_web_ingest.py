@@ -58,7 +58,7 @@ def fetch_url(url):
     response = requests.get(
         url,
         timeout=30,
-        headers={"User-Agent": "SAP Ticket Resolver/1.0"},
+        headers={"User-Agent": "SAP AI/1.0"},
     )
     response.raise_for_status()
     return extract_text_from_html(response.text)

@@ -27,8 +27,8 @@ Tools (SAP APIs, Logs, DB, Scripts)
 SAP System (ECC / S4HANA)
 """.strip()
 
-st.set_page_config(page_title="SAP AI Assistant", layout="wide")
-st.title("SAP Ticket Resolver")
+st.set_page_config(page_title="SAP AI", layout="wide")
+st.title("SAP AI")
 status = runtime_status()
 st.caption("Paste an SAP incident and get a structured runbook with checks, T-codes, fixes, and escalation guidance.")
 

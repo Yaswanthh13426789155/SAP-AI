@@ -1,4 +1,4 @@
-from langchain.tools import Tool
+from langchain_core.tools import Tool
 
 from app import ask_sap
 from sap_ticket_catalog import TICKET_CATALOG
@@ -25,15 +25,20 @@ TCODE_MAP = build_tcode_map()
 def get_tcode_info(tcode):
     return TCODE_MAP.get(tcode.upper(), "T-code not found in the local SAP runbook catalog.")
 
+
+def get_sap_knowledge(query):
+    return ask_sap(query)
+
+
 tcode_tool = Tool(
     name="TCodeTool",
-    func=lambda x: get_tcode_info(x),
+    func=get_tcode_info,
     description="Useful for SAP T-code related queries"
 )
 
 
 rag_tool = Tool(
     name="SAPKnowledgeTool",
-    func=ask_sap,
+    func=get_sap_knowledge,
     description="Useful for SAP process, troubleshooting, BASIS, and ticket resolution questions."
 )

@@ -1,14 +1,13 @@
 from pathlib import Path
 
 import faiss
-import ollama
-from sentence_transformers import SentenceTransformer
 
 
 MODEL_NAME = "all-MiniLM-L6-v2"
+BASE_DIR = Path(__file__).resolve().parent
 DATA_FILES = [
-    "sap_tickets.txt",
-    "sap_dataset.txt",
+    BASE_DIR / "sap_tickets.txt",
+    BASE_DIR / "sap_dataset.txt",
 ]
 
 
@@ -16,11 +15,10 @@ def load_data():
     data = []
 
     for name in DATA_FILES:
-        path = Path(name)
-        if not path.exists():
+        if not name.exists():
             continue
 
-        chunks = [chunk.strip() for chunk in path.read_text(encoding="utf-8").split("\n\n")]
+        chunks = [chunk.strip() for chunk in name.read_text(encoding="utf-8").split("\n\n")]
         data.extend(chunk for chunk in chunks if chunk)
 
     if not data:
@@ -40,6 +38,13 @@ def build_index(model, data):
 
 
 def ask_sap(question, model, data, index):
+    try:
+        import ollama
+    except ImportError as exc:
+        raise RuntimeError(
+            "The optional 'ollama' package is not installed. Install it before using rag_sap.py."
+        ) from exc
+
     q_embed = model.encode([question])
     _, neighbors = index.search(q_embed, k=min(5, len(data)))
     context = "\n".join(data[i] for i in neighbors[0])
@@ -62,6 +67,8 @@ def ask_sap(question, model, data, index):
 
 
 if __name__ == "__main__":
+    from sentence_transformers import SentenceTransformer
+
     sentence_model = SentenceTransformer(MODEL_NAME)
     dataset = load_data()
     faiss_index = build_index(sentence_model, dataset)

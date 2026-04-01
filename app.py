@@ -6,6 +6,8 @@ import re
 
 from dotenv import load_dotenv
 
+from sap_intelligence import neural_nlp_is_available, ocr_is_available
+from sap_landscape import get_landscape_counts, has_landscape_override, resolve_system_context
 from sap_ticket_catalog import TICKET_CATALOG
 
 
@@ -137,6 +139,254 @@ ENVIRONMENT_PROFILES = {
         ],
     },
 }
+RUNBOOK_HEADINGS = {
+    "Incident",
+    "Likely Root Cause",
+    "Priority",
+    "Likely Owner",
+    "Required Inputs",
+    "Environment",
+    "Landscape Plan",
+    "Environment Guidance",
+    "Environment Guardrails",
+    "System",
+    "Subsystem",
+    "System Context",
+    "Integration Points",
+    "Integration Guidance",
+    "NLP Signals",
+    "Neural Matches",
+    "Image Findings",
+    "Issue Mix",
+    "Parallel Workstreams",
+    "Cross-Issue Risks",
+    "Guidance",
+    "Best T-codes",
+    "Checks",
+    "Resolution",
+    "Fix Plan",
+    "Escalate If",
+    "Risks / Escalation",
+    "Why This Matched",
+    "Supporting Context",
+    "Related Playbooks",
+}
+RUNBOOK_HEADING_ALIASES = {
+    "Root Cause": "Likely Root Cause",
+    "T-codes": "Best T-codes",
+    "T Codes": "Best T-codes",
+    "Fix Plan": "Resolution",
+    "System Scope": "System",
+    "Subsystem Scope": "Subsystem",
+    "Integration Targets": "Integration Points",
+    "OCR Findings": "Image Findings",
+    "Workstreams": "Parallel Workstreams",
+    "Cross-System Risks": "Cross-Issue Risks",
+}
+AREA_OWNERS = {
+    "Basis": [
+        "SAP Basis support",
+        "SAP operations or infrastructure team for host, database, or instance issues",
+    ],
+    "Security": [
+        "SAP security or authorization team",
+        "GRC or access approver if role changes need approval",
+    ],
+    "Integration": [
+        "SAP integration or middleware team",
+        "Basis support if RFC, qRFC, or gateway connectivity is involved",
+    ],
+    "FI": [
+        "SAP FI functional support",
+        "Basis or ABAP team if posting fails because of technical dumps or updates",
+    ],
+    "MM": [
+        "SAP MM functional support",
+        "Basis team if the failure is technical rather than process or master-data related",
+    ],
+    "SD": [
+        "SAP SD functional support",
+        "ABAP or integration team if pricing logic, outputs, or interfaces are custom",
+    ],
+}
+UNIVERSAL_SUPPORT_PATTERNS = [
+    {
+        "id": "authorization",
+        "title": "Authorization or role issue",
+        "area": "Security",
+        "signals": ["authorization", "not authorized", "access denied", "su53", "role", "pfcg"],
+        "tcodes": ["SU53", "PFCG", "SUIM", "ST01"],
+        "checks": [
+            "Capture the failed business step and run SU53 immediately for the affected user.",
+            "Compare the missing authorization object with the assigned role design in PFCG.",
+            "If the issue is unclear, trace the failed check with ST01.",
+        ],
+        "resolution": [
+            "Add or adjust the required authorization in the correct role.",
+            "Regenerate and transport the role only after security approval if needed.",
+            "Retest the exact failed action with the same user and context.",
+        ],
+        "inputs": ["affected user", "failed transaction or app", "SU53 output", "role name"],
+        "causes": [
+            "A required authorization object is missing from the assigned role.",
+            "The user buffer or derived role assignment is outdated.",
+        ],
+    },
+    {
+        "id": "transport_change",
+        "title": "Transport, release, or environment mismatch issue",
+        "area": "Basis",
+        "signals": ["transport", "release", "import", "stms", "rc ", "return code", "object missing"],
+        "tcodes": ["STMS", "SE09", "SE10", "SE03"],
+        "checks": [
+            "Review the import or release log to find the failing object and phase.",
+            "Check transport sequence, prerequisites, and object lock or repair status.",
+            "Compare behavior across DEV, QA, TEST, and PROD for the same change.",
+        ],
+        "resolution": [
+            "Import prerequisites first or repair the transport sequence.",
+            "Re-release or rebuild the request if the object list is inconsistent.",
+            "Retest after confirming the transported objects are active in the target environment.",
+        ],
+        "inputs": ["transport number", "target system", "import log text", "failing object"],
+        "causes": [
+            "A prerequisite change is missing or out of sequence.",
+            "The transport contains inconsistent or inactive objects.",
+        ],
+    },
+    {
+        "id": "interface_connectivity",
+        "title": "Interface, RFC, IDoc, or queue processing issue",
+        "area": "Integration",
+        "signals": ["idoc", "rfc", "sm59", "queue", "qrfc", "smq1", "smq2", "bd87", "we02", "status 51"],
+        "tcodes": ["WE02", "WE05", "BD87", "SM59", "SM58", "SMQ1", "SMQ2"],
+        "checks": [
+            "Identify the exact message, partner, destination, queue, or IDoc status record.",
+            "Check whether the failure is master data, credentials, connectivity, or posting logic.",
+            "Review retries, stuck queues, and downstream acknowledgements before reprocessing.",
+        ],
+        "resolution": [
+            "Fix the root cause first, then reprocess only the failed IDoc, tRFC, or queue entries.",
+            "Validate middleware, credentials, and partner profile settings if connectivity is involved.",
+            "Monitor the backlog until the interface drains successfully.",
+        ],
+        "inputs": ["IDoc number or queue name", "destination", "message text", "partner or interface name"],
+        "causes": [
+            "Interface processing is blocked by application, credential, or connectivity failures.",
+            "The message cannot post because of missing master data or downstream errors.",
+        ],
+    },
+    {
+        "id": "background_job",
+        "title": "Background job, batch, or scheduling issue",
+        "area": "Basis",
+        "signals": ["job", "batch", "sm37", "sm36", "variant", "cancelled", "scheduler", "spool"],
+        "tcodes": ["SM37", "SM36", "SE38", "SA38", "SU53"],
+        "checks": [
+            "Review the job log, spool, runtime user, and variant in SM37.",
+            "Identify whether the failure is authorization, variant, spool, or downstream application logic.",
+            "Check recent transports or schedule changes that may have broken the job definition.",
+        ],
+        "resolution": [
+            "Correct the missing authorization, variant, or spool setup.",
+            "Reschedule or rerun the job in a controlled way after fixing the root cause.",
+            "Confirm that the output and dependent follow-on steps complete successfully.",
+        ],
+        "inputs": ["job name", "run timestamp", "technical user", "job log text", "variant name"],
+        "causes": [
+            "The scheduled job references invalid parameters or missing authorizations.",
+            "A downstream process or spool/output dependency is failing during runtime.",
+        ],
+    },
+    {
+        "id": "performance_capacity",
+        "title": "Performance, workload, or system capacity issue",
+        "area": "Basis",
+        "signals": ["slow", "performance", "cpu", "memory", "dump", "st22", "response time", "work process"],
+        "tcodes": ["ST03N", "ST06", "ST22", "SM50", "SM66", "DBACOCKPIT"],
+        "checks": [
+            "Identify whether the issue is isolated to one transaction, one user group, or the whole system.",
+            "Check workload, resource usage, dumps, and long-running work processes.",
+            "Correlate the slowdown with jobs, locks, expensive SQL, or infrastructure alarms.",
+        ],
+        "resolution": [
+            "Contain runaway jobs or blocking processes before changing system parameters.",
+            "Tune the responsible workload, SQL, or memory settings based on the evidence collected.",
+            "Retest business response times after each corrective action.",
+        ],
+        "inputs": ["affected transaction", "time window", "number of users impacted", "dump or alert text"],
+        "causes": [
+            "Resource saturation, expensive SQL, or blocked processes are degrading response time.",
+            "An abnormal workload spike or code path is exhausting work processes or memory.",
+        ],
+    },
+    {
+        "id": "financial_posting",
+        "title": "FI posting, payment, or document control issue",
+        "area": "FI",
+        "signals": ["invoice", "payment", "fb60", "f110", "posting", "ob52", "fb08", "number range", "fbn1"],
+        "tcodes": ["FB03", "FB08", "FB60", "F110", "OB52", "FBN1"],
+        "checks": [
+            "Capture the document type, company code, fiscal period, and exact posting error.",
+            "Check whether posting period, payment setup, or number range maintenance is blocking the transaction.",
+            "Confirm whether the document is already cleared, reversed, or partially processed.",
+        ],
+        "resolution": [
+            "Fix the financial control point such as posting period, number range, or payment master data.",
+            "Reverse or repost only after confirming finance controls and downstream dependencies.",
+            "Validate the final accounting document and related subledger impact after correction.",
+        ],
+        "inputs": ["company code", "document number", "fiscal period", "vendor or customer", "error text"],
+        "causes": [
+            "Financial control settings or master data are blocking the posting flow.",
+            "The document needs reversal, reset, or period maintenance before reposting.",
+        ],
+    },
+    {
+        "id": "logistics_master_data",
+        "title": "MM or SD process blocked by master data, pricing, or stock conditions",
+        "area": "MM",
+        "signals": ["migo", "material", "stock", "pricing", "condition", "va01", "vl02n", "purchase", "release"],
+        "tcodes": ["MIGO", "MMBE", "ME29N", "ME28", "VA01", "VA02", "VK11", "VL02N"],
+        "checks": [
+            "Capture the exact transaction, material or document, and business step that failed.",
+            "Check whether the issue is pricing, release strategy, stock, period, or master-data validity.",
+            "Validate organizational data such as plant, sales area, purchasing group, or delivery status.",
+        ],
+        "resolution": [
+            "Correct the missing condition record, stock data, release authorization, or master-data setting.",
+            "Retest the full business flow after correction, not only the single error screen.",
+            "Confirm that downstream delivery, billing, or inventory steps still behave correctly.",
+        ],
+        "inputs": ["document number", "material", "plant", "customer or vendor", "pricing or stock message"],
+        "causes": [
+            "The business process is blocked by incomplete master data or document controls.",
+            "Pricing, release strategy, stock, or status settings do not match the transaction context.",
+        ],
+    },
+    {
+        "id": "workflow_fiori_application",
+        "title": "Workflow, Fiori, or application-layer process issue",
+        "area": "Basis",
+        "signals": ["workflow", "approval", "fiori", "launchpad", "odata", "app error", "http 500", "ui"],
+        "tcodes": ["SWI1", "SWIA", "/IWFND/ERROR_LOG", "/IWBEP/ERROR_LOG", "SU53"],
+        "checks": [
+            "Identify whether the failure happens in workflow routing, Fiori launch, OData service, or backend authorization.",
+            "Review workflow logs, gateway error logs, and the exact user action that failed.",
+            "Check whether the issue is limited to one app, one role, or one document scenario.",
+        ],
+        "resolution": [
+            "Correct the failing workflow agent, gateway service, role assignment, or backend application error.",
+            "Retest from the same app and business context after the fix is applied.",
+            "Validate both frontend behavior and backend document posting after recovery.",
+        ],
+        "inputs": ["app name or tile", "workflow item or document number", "gateway error text", "affected business role"],
+        "causes": [
+            "The workflow or Fiori flow is blocked by authorization, gateway, or backend application failures.",
+            "The frontend app is calling a service or approval step that is misconfigured or failing in the backend.",
+        ],
+    },
+]
 
 
 @lru_cache(maxsize=None)
@@ -169,6 +419,14 @@ def get_config(name, default=None):
     return default
 
 
+def get_config_aliases(names, default=None):
+    for name in names:
+        value = get_config(name)
+        if value not in (None, ""):
+            return value
+    return default
+
+
 def get_openai_model():
     return get_config("OPENAI_MODEL", "gpt-4.1-mini")
 
@@ -182,19 +440,95 @@ def get_ollama_model():
 
 
 def get_open_source_backend():
-    return normalize_open_source_backend(get_config("OPEN_SOURCE_BACKEND", "auto"))
+    return normalize_open_source_backend(
+        get_config_aliases(["OPEN_SOURCE_BACKEND", "OPEN_LLM_BACKEND"], "auto")
+    )
 
 
 def get_openai_compatible_base_url():
-    return str(get_config("OPEN_SOURCE_API_BASE_URL", "")).strip().rstrip("/")
+    return str(
+        get_config_aliases(
+            [
+                "OPEN_SOURCE_API_BASE_URL",
+                "OPEN_LLM_API_BASE_URL",
+                "OPEN_LLM_BASE_URL",
+            ],
+            "",
+        )
+    ).strip().rstrip("/")
 
 
 def get_openai_compatible_model():
-    return str(get_config("OPEN_SOURCE_API_MODEL", "")).strip()
+    return str(
+        get_config_aliases(
+            [
+                "OPEN_SOURCE_API_MODEL",
+                "OPEN_LLM_API_MODEL",
+                "OPEN_LLM_MODEL",
+            ],
+            "",
+        )
+    ).strip()
 
 
 def get_openai_compatible_api_key():
-    return str(get_config("OPEN_SOURCE_API_KEY", "open-source-local")).strip()
+    return str(
+        get_config_aliases(
+            [
+                "OPEN_SOURCE_API_KEY",
+                "OPEN_LLM_API_KEY",
+            ],
+            "open-source-local",
+        )
+    ).strip()
+
+
+def get_openai_compatible_timeout_seconds():
+    return float(
+        get_config_aliases(
+            [
+                "OPEN_SOURCE_API_TIMEOUT_SECONDS",
+                "OPEN_LLM_TIMEOUT_SECONDS",
+            ],
+            "25",
+        )
+    )
+
+
+def get_openai_compatible_max_tokens():
+    return int(
+        get_config_aliases(
+            [
+                "OPEN_SOURCE_API_MAX_TOKENS",
+                "OPEN_LLM_MAX_TOKENS",
+            ],
+            "260",
+        )
+    )
+
+
+def get_huggingface_token():
+    return str(
+        get_config_aliases(
+            [
+                "HF_TOKEN",
+                "HUGGINGFACEHUB_API_TOKEN",
+                "HUGGING_FACE_HUB_TOKEN",
+            ],
+            "",
+        )
+    ).strip()
+
+
+def configure_huggingface_auth():
+    token = get_huggingface_token()
+    if not token:
+        return False
+
+    os.environ["HF_TOKEN"] = token
+    os.environ["HUGGINGFACEHUB_API_TOKEN"] = token
+    os.environ["HUGGING_FACE_HUB_TOKEN"] = token
+    return True
 
 
 def get_hf_local_model():
@@ -219,6 +553,7 @@ def normalize_open_source_backend(value):
         "open_source": "auto",
         "oss": "auto",
         "ollama": "ollama",
+        "open_llm": "openai_compatible",
         "local_api": "openai_compatible",
         "open_source_api": "openai_compatible",
         "openai_compatible": "openai_compatible",
@@ -273,6 +608,7 @@ def load_openai_client():
 
 
 def runtime_status():
+    landscape_counts = get_landscape_counts()
     open_source_backends = get_available_open_source_backends()
     return {
         "openai_configured": openai_is_configured(),
@@ -294,6 +630,11 @@ def runtime_status():
         "vector_context_enabled": is_vector_context_enabled(),
         "sap_web_data_present": (BASE_DIR / "sap_web_data.txt").exists(),
         "sap_dataset_present": (BASE_DIR / "sap_dataset.txt").exists(),
+        "supported_systems": landscape_counts["systems"],
+        "supported_subsystems": landscape_counts["subsystems"],
+        "custom_landscape_present": has_landscape_override(),
+        "ocr_available": ocr_is_available(),
+        "neural_nlp_available": neural_nlp_is_available(),
     }
 
 
@@ -370,7 +711,223 @@ def set_hf_local_failure_notice(message):
 
 def clear_hf_local_failure_notice():
     global HF_LOCAL_FAILURE_NOTICE
-    HF_LOCAL_FAILURE_NOTICE = None
+HF_LOCAL_FAILURE_NOTICE = None
+
+
+def normalize_runbook_heading(heading):
+    normalized = str(heading or "").strip().rstrip(":")
+    return RUNBOOK_HEADING_ALIASES.get(normalized, normalized)
+
+
+def parse_runbook_sections(text):
+    sections = {}
+    notices = []
+    current_heading = None
+
+    for raw_line in str(text).splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        normalized_heading = normalize_runbook_heading(line)
+        if normalized_heading in RUNBOOK_HEADINGS:
+            current_heading = normalized_heading
+            sections.setdefault(current_heading, [])
+            continue
+
+        if current_heading is None:
+            notices.append(line)
+            continue
+
+        if line.startswith("- "):
+            sections[current_heading].append(line[2:].strip())
+        else:
+            sections[current_heading].append(line)
+
+    return notices, sections
+
+
+def join_section_items(items, limit=2):
+    trimmed = [item for item in (items or []) if item][:limit]
+    return "; ".join(trimmed)
+
+
+def first_section_item(sections, section_name):
+    items = sections.get(section_name) or []
+    return items[0] if items else ""
+
+
+def build_next_best_actions(sections):
+    actions = []
+    for section_name, limit in [
+        ("Checks", 2),
+        ("Resolution", 2),
+        ("Escalate If", 1),
+    ]:
+        for item in (sections.get(section_name) or [])[:limit]:
+            if item and item not in actions:
+                actions.append(item)
+    return actions[:5]
+
+
+def build_solve_now_plan(sections, environment):
+    steps = []
+    incident = join_section_items(sections.get("Incident"), limit=1) or "the SAP incident"
+    primary_check = first_section_item(sections, "Checks")
+    primary_fix = first_section_item(sections, "Resolution")
+    confirmation_step = (sections.get("Resolution") or [""])[1] or (sections.get("Checks") or ["", ""])[1]
+    escalation = first_section_item(sections, "Escalate If")
+
+    steps.append(f"Stabilize scope in {environment}: confirm the affected users, business step, and exact symptom for {incident}.")
+    if primary_check:
+        steps.append(primary_check)
+    if primary_fix:
+        steps.append(primary_fix)
+    if confirmation_step:
+        steps.append(f"Confirm recovery: {confirmation_step}")
+    if escalation:
+        steps.append(f"Escalate only if needed: {escalation}")
+
+    unique_steps = []
+    for step in steps:
+        if step and step not in unique_steps:
+            unique_steps.append(step)
+    return unique_steps[:5]
+
+
+def build_expected_outcome(sections):
+    incident = join_section_items(sections.get("Incident"), limit=1) or "the affected SAP process"
+    resolution = first_section_item(sections, "Resolution")
+    tcodes = ", ".join((sections.get("Best T-codes") or [])[:2])
+    outcome_parts = [f"Expected outcome: {incident} completes successfully without the current error."]
+    if resolution:
+        outcome_parts.append(f"Primary fix path: {resolution}.")
+    if tcodes:
+        outcome_parts.append(f"Validation evidence should be captured with {tcodes}.")
+    return " ".join(outcome_parts)
+
+
+def build_business_update(query, sections, environment):
+    incident = join_section_items(sections.get("Incident"), limit=2) or "SAP issue under investigation"
+    root_cause = join_section_items(sections.get("Likely Root Cause"), limit=1) or "Root cause is still being validated"
+    plan = join_section_items(sections.get("Resolution"), limit=2) or join_section_items(sections.get("Checks"), limit=2)
+    risk = join_section_items(sections.get("Escalate If"), limit=1) or "No immediate escalation trigger captured yet"
+    system_scope = join_section_items(sections.get("System"), limit=1)
+    subsystem_scope = join_section_items(sections.get("Subsystem"), limit=1)
+    scope = environment
+    if system_scope:
+        scope = f"{scope} / {system_scope}"
+    if subsystem_scope and subsystem_scope != system_scope:
+        scope = f"{scope} / {subsystem_scope}"
+
+    return (
+        f"Business update for {scope}: {incident}. "
+        f"Likely cause: {root_cause}. "
+        f"Current action plan: {plan}. "
+        f"Escalate if: {risk}."
+    )
+
+
+def build_end_user_update(query, sections, environment):
+    incident = join_section_items(sections.get("Incident"), limit=1) or "the reported SAP issue"
+    plan = first_section_item(sections, "Resolution") or first_section_item(sections, "Checks") or "the current recovery plan"
+    outcome = build_expected_outcome(sections).replace("Expected outcome: ", "")
+    return (
+        f"We identified the issue in {environment} as {incident}. "
+        f"The support team is now working on {plan}. "
+        f"Once complete, {outcome}"
+    )
+
+
+def build_technical_handoff(query, sections, environment):
+    lines = [
+        f"Landscape: {environment}",
+        f"Ticket: {query}",
+    ]
+
+    system_scope = join_section_items(sections.get("System"), limit=1)
+    if system_scope:
+        lines.append(f"System: {system_scope}")
+
+    subsystem_scope = join_section_items(sections.get("Subsystem"), limit=1)
+    if subsystem_scope:
+        lines.append(f"Subsystem: {subsystem_scope}")
+
+    incident = join_section_items(sections.get("Incident"), limit=2)
+    if incident:
+        lines.append(f"Incident summary: {incident}")
+
+    root_cause = join_section_items(sections.get("Likely Root Cause"), limit=1)
+    if root_cause:
+        lines.append(f"Likely root cause: {root_cause}")
+
+    tcodes = ", ".join(sections.get("Best T-codes", [])[:4])
+    if tcodes:
+        lines.append(f"Primary T-codes: {tcodes}")
+
+    checks = join_section_items(sections.get("Checks"), limit=3)
+    if checks:
+        lines.append(f"Checks completed or recommended: {checks}")
+
+    resolution = join_section_items(sections.get("Resolution"), limit=3)
+    if resolution:
+        lines.append(f"Resolution path: {resolution}")
+
+    escalation = join_section_items(sections.get("Escalate If"), limit=2)
+    if escalation:
+        lines.append(f"Escalation conditions: {escalation}")
+
+    return "\n".join(lines)
+
+
+def build_follow_up_prompts(query, sections, environment):
+    prompts = []
+
+    incident = sections.get("Incident") or []
+    tcodes = sections.get("Best T-codes") or []
+    system_scope = join_section_items(sections.get("System"), limit=1) or "SAP system"
+    subsystem_scope = join_section_items(sections.get("Subsystem"), limit=1)
+    scope = system_scope
+    if subsystem_scope and subsystem_scope != system_scope:
+        scope = f"{scope} / {subsystem_scope}"
+
+    if incident:
+        prompts.append(f"Summarize this {environment} incident in {scope} for a business manager.")
+    if tcodes:
+        prompts.append(f"Give me a production-safe validation checklist using {tcodes[0]}.")
+    if sections.get("Resolution"):
+        prompts.append(f"Turn this into an operations handoff note for the {environment} {scope} support team.")
+        prompts.append(f"Draft an end-user update for this {environment} SAP issue.")
+    if sections.get("Escalate If"):
+        prompts.append("What should I monitor after the fix to make sure the issue does not come back?")
+
+    prompts.append(f"Explain the likely root cause of this SAP ticket in simpler terms: {query}")
+    return prompts[:4]
+
+
+def build_joule_workspace(query, answer, environment, provider):
+    notices, sections = parse_runbook_sections(answer)
+    normalized_environment = resolve_environment(environment, query)
+    next_actions = build_next_best_actions(sections)
+    primary_tcode = (sections.get("Best T-codes") or [""])[0]
+
+    return {
+        "environment": normalized_environment,
+        "provider": provider,
+        "notices": notices,
+        "sections": sections,
+        "next_actions": next_actions,
+        "solve_now_plan": build_solve_now_plan(sections, normalized_environment),
+        "expected_outcome": build_expected_outcome(sections),
+        "business_update": build_business_update(query, sections, normalized_environment),
+        "end_user_update": build_end_user_update(query, sections, normalized_environment),
+        "technical_handoff": build_technical_handoff(query, sections, normalized_environment),
+        "follow_up_prompts": build_follow_up_prompts(query, sections, normalized_environment),
+        "primary_incident": join_section_items(sections.get("Incident"), limit=1),
+        "primary_system": join_section_items(sections.get("System"), limit=1),
+        "primary_subsystem": join_section_items(sections.get("Subsystem"), limit=1),
+        "primary_tcode": primary_tcode,
+    }
 
 
 @lru_cache(maxsize=1)
@@ -438,7 +995,7 @@ def fetch_openai_compatible_models():
         response = requests.get(
             f"{get_openai_compatible_base_url()}/models",
             headers=headers,
-            timeout=float(get_config("OPEN_SOURCE_API_TIMEOUT_SECONDS", "5")),
+            timeout=min(get_openai_compatible_timeout_seconds(), 5.0),
         )
         response.raise_for_status()
     except Exception:
@@ -463,7 +1020,8 @@ def openai_compatible_is_available():
         for model in models
         if isinstance(model, dict)
     }
-    return configured_model in names
+    bare_names = {name.split(":")[0] for name in names if name}
+    return configured_model in names or configured_model in bare_names
 
 
 @lru_cache(maxsize=1)
@@ -480,7 +1038,7 @@ def load_openai_compatible_client():
         api_key=get_openai_compatible_api_key() or "open-source-local",
         base_url=get_openai_compatible_base_url(),
         max_retries=0,
-        timeout=float(get_config("OPEN_SOURCE_API_TIMEOUT_SECONDS", "25")),
+        timeout=get_openai_compatible_timeout_seconds(),
     )
 
 
@@ -505,6 +1063,8 @@ def hf_local_is_available():
 def load_hf_local_pipeline():
     if not hf_local_is_configured():
         return None
+
+    configure_huggingface_auth()
 
     from transformers import pipeline
 
@@ -543,6 +1103,7 @@ def open_source_is_available():
 @lru_cache(maxsize=1)
 def load_embeddings():
     embedding_cls = None
+    configure_huggingface_auth()
 
     try:
         from langchain_huggingface import HuggingFaceEmbeddings as NewEmbeddings
@@ -742,6 +1303,349 @@ def summarize_confidence(matches):
     return "Low"
 
 
+def score_universal_pattern(pattern, query_text, query_tokens, query_tcodes):
+    score = 0
+    reasons = []
+
+    for signal in pattern["signals"]:
+        points = phrase_points(signal, query_text, query_tokens)
+        if points:
+            score += points + 2
+            reasons.append(f"matched signal '{signal}'")
+
+    if pattern["area"].lower() in query_text:
+        score += 2
+        reasons.append(f"matched area '{pattern['area']}'")
+
+    pattern_tcodes = set(pattern.get("tcodes", []))
+    matched_tcodes = sorted(query_tcodes.intersection(pattern_tcodes))
+    if matched_tcodes:
+        score += len(matched_tcodes) * 6
+        reasons.append(f"matched T-code {', '.join(matched_tcodes)}")
+
+    return {
+        "pattern": pattern,
+        "score": score,
+        "reasons": reasons,
+    }
+
+
+def find_universal_pattern(query, top_k=3):
+    query_text = normalize_text(query)
+    query_tokens = {token for token in tokenize(query) if token not in STOPWORDS}
+    query_tcodes = extract_tcodes(query)
+
+    scored = [
+        score_universal_pattern(pattern, query_text, query_tokens, query_tcodes)
+        for pattern in UNIVERSAL_SUPPORT_PATTERNS
+    ]
+    scored = [item for item in scored if item["score"] > 0]
+    scored.sort(key=lambda item: item["score"], reverse=True)
+    return scored[:top_k]
+
+
+def infer_priority(query, environment):
+    lowered = query.lower()
+    resolved_environment = resolve_environment(environment, query)
+
+    if any(term in lowered for term in ["sev1", "p1", "critical outage", "system down", "production down"]):
+        return "Critical"
+    if resolved_environment == "PROD" and any(
+        term in lowered
+        for term in ["blocked", "cannot post", "cannot login", "month-end", "payroll", "all users", "integration stopped"]
+    ):
+        return "High"
+    if resolved_environment == "PROD":
+        return "High"
+    if any(term in lowered for term in ["urgent", "asap", "today", "go live", "cutover"]):
+        return "High"
+    return "Medium"
+
+
+def get_area_owners(area):
+    return AREA_OWNERS.get(
+        area,
+        [
+            "SAP application support",
+            "Basis or functional team depending on whether the issue is technical or process related",
+        ],
+    )
+
+
+def derive_required_inputs(query, area, tcodes, pattern=None):
+    inputs = [
+        "Exact SAP error text or message class and number",
+        "Affected user, batch user, or interface technical account",
+        "Client and system where the issue occurred",
+        "Business impact and whether production users are blocked",
+    ]
+
+    if tcodes:
+        inputs.append(f"Transaction code or app involved: {', '.join(tcodes[:4])}")
+
+    lowered = query.lower()
+    conditional_inputs = [
+        ("document", "Document number or business object ID"),
+        ("invoice", "Invoice or accounting document number"),
+        ("idoc", "IDoc number and status record text"),
+        ("queue", "Queue name and exact SYSFAIL or stop reason"),
+        ("transport", "Transport number and import phase"),
+        ("job", "Job name, job count, and job log"),
+        ("vendor", "Vendor, customer, material, or master-data identifier"),
+        ("material", "Vendor, customer, material, or master-data identifier"),
+        ("printer", "Output device, spool request, or printer name"),
+    ]
+    for signal, input_text in conditional_inputs:
+        if signal in lowered and input_text not in inputs:
+            inputs.append(input_text)
+
+    if pattern:
+        for item in pattern.get("inputs", []):
+            if item and item not in inputs:
+                inputs.append(item[0].upper() + item[1:] if item[0].islower() else item)
+
+    if area in {"FI", "MM", "SD"}:
+        inputs.append("Organizational data such as company code, plant, sales area, or purchasing org")
+
+    return inputs[:7]
+
+
+def derive_best_tcodes(query_tcodes, matched_tcodes, pattern=None):
+    ordered = []
+    for bucket in [sorted(query_tcodes), matched_tcodes or [], pattern.get("tcodes", []) if pattern else []]:
+        for tcode in bucket:
+            if tcode and tcode not in ordered:
+                ordered.append(tcode)
+
+    defaults = ["SU53", "ST22", "SM21", "SM37", "SM59"]
+    for tcode in defaults:
+        if tcode not in ordered:
+            ordered.append(tcode)
+
+    return ordered[:6]
+
+
+def extend_unique(items, additions, limit=None):
+    combined = list(items or [])
+    for item in additions or []:
+        if item and item not in combined:
+            combined.append(item)
+        if limit and len(combined) >= limit:
+            break
+    return combined[:limit] if limit else combined
+
+
+def build_mixed_issue_workstreams(matches, universal_patterns):
+    workstreams = []
+    seen_keys = set()
+
+    for match in matches[:4]:
+        if match["score"] < 12:
+            continue
+        ticket = match["ticket"]
+        key = ("ticket", ticket["title"].lower())
+        if key in seen_keys:
+            continue
+        if any(
+            stream["area"] == ticket["area"]
+            and set(stream["tcodes"]).intersection(ticket["tcodes"])
+            for stream in workstreams
+        ):
+            continue
+        workstreams.append(
+            {
+                "title": ticket["title"],
+                "area": ticket["area"],
+                "score": match["score"],
+                "reasons": match["reasons"][:3],
+                "tcodes": ticket["tcodes"],
+                "checks": ticket["checks"],
+                "resolution": ticket["resolution"],
+                "inputs": [],
+                "owners": get_area_owners(ticket["area"]),
+            }
+        )
+        seen_keys.add(key)
+
+    if len(workstreams) >= 2:
+        workstreams.sort(key=lambda stream: stream["score"], reverse=True)
+        return workstreams[:3]
+
+    for item in universal_patterns[:4]:
+        if item["score"] < 8:
+            continue
+        pattern = item["pattern"]
+        key = ("pattern", pattern["id"])
+        if key in seen_keys:
+            continue
+        if any(stream["area"] == pattern["area"] for stream in workstreams):
+            continue
+        workstreams.append(
+            {
+                "title": pattern["title"],
+                "area": pattern["area"],
+                "score": item["score"],
+                "reasons": item["reasons"][:3],
+                "tcodes": pattern.get("tcodes", []),
+                "checks": pattern.get("checks", []),
+                "resolution": pattern.get("resolution", []),
+                "inputs": pattern.get("inputs", []),
+                "owners": get_area_owners(pattern["area"]),
+            }
+        )
+        seen_keys.add(key)
+
+    workstreams.sort(key=lambda stream: stream["score"], reverse=True)
+    return workstreams[:3]
+
+
+def detect_mixed_issue_workstreams(query, matches, universal_patterns):
+    workstreams = build_mixed_issue_workstreams(matches, universal_patterns)
+    if len(workstreams) < 2:
+        return []
+
+    lowered = query.lower()
+    cue_terms = [
+        " and ",
+        " also ",
+        " plus ",
+        " both ",
+        " while ",
+        " meanwhile ",
+        " multiple ",
+        " mixed ",
+        " issue 1",
+        " issue 2",
+        ";",
+        "\n",
+    ]
+    has_multi_cue = any(term in lowered for term in cue_terms)
+    distinct_areas = {stream["area"] for stream in workstreams}
+    distinct_titles = {stream["title"] for stream in workstreams}
+    strong_secondary = len(workstreams) >= 2 and workstreams[1]["score"] >= max(10, workstreams[0]["score"] - 10)
+    minimum_secondary = len(workstreams) >= 2 and workstreams[1]["score"] >= 12
+
+    if len(distinct_areas) >= 2 and strong_secondary:
+        return workstreams
+    if len(distinct_areas) >= 2 and has_multi_cue and minimum_secondary:
+        return workstreams
+    if has_multi_cue and len(distinct_titles) >= 2 and strong_secondary:
+        return workstreams
+    return []
+
+
+def build_mixed_issue_answer(query, context_snippets, context_source, environment, system_context, workstreams, analysis_context=None):
+    primary_areas = []
+    owners = []
+    best_tcodes = []
+    required_inputs = []
+    issue_mix = []
+    parallel_workstreams = []
+    shared_checks = [
+        "Split the ticket into separate failing steps and confirm whether one symptom is upstream of the others.",
+        "Align timestamps, users, and business objects so you can see whether the second issue is a consequence of the first one.",
+        "Validate the owning system, subsystem, and support team for each symptom before applying transports or message reprocessing.",
+    ]
+    shared_resolution = [
+        "Fix the upstream dependency first, then retest the downstream symptom before applying a second change.",
+        "Keep transports, role changes, and interface reprocessing as separate controlled actions when the ticket spans multiple teams.",
+    ]
+    shared_risks = [
+        "Do not assume one workaround fixes every symptom until the dependency order is proven.",
+        "Avoid replaying queues, IDocs, or jobs before the upstream authorization, transport, or service issue is corrected.",
+        "Coordinate multiple owners so one team does not overwrite or mask the evidence needed by another team.",
+    ]
+    escalation_lines = [
+        "The incident requires coordinated action from more than one SAP team and the ownership sequence is unclear.",
+        "Production remains blocked after the first workstream is cleared.",
+        "The issue spans security, transport, integration, or application layers and needs a controlled change plan.",
+    ]
+
+    for index, workstream in enumerate(workstreams, start=1):
+        primary_areas = extend_unique(primary_areas, [workstream["area"]], limit=4)
+        owners = extend_unique(owners, workstream["owners"], limit=6)
+        best_tcodes = extend_unique(best_tcodes, workstream["tcodes"], limit=6)
+        required_inputs = extend_unique(
+            required_inputs,
+            derive_required_inputs(query, workstream["area"], workstream["tcodes"]),
+            limit=8,
+        )
+        required_inputs = extend_unique(
+            required_inputs,
+            [
+                item[0].upper() + item[1:] if item and item[0].islower() else item
+                for item in workstream.get("inputs", [])
+                if item
+            ],
+            limit=8,
+        )
+        reason_text = "; ".join(workstream["reasons"][:2]) or "multiple strong SAP signals"
+        issue_mix.append(f"Workstream {index}: {workstream['title']} ({workstream['area']}) because {reason_text}")
+        primary_check = workstream["checks"][0] if workstream["checks"] else "Collect the first diagnostic trace for this workstream."
+        primary_fix = workstream["resolution"][0] if workstream["resolution"] else "Apply the safest corrective action for this workstream and retest."
+        parallel_workstreams.append(
+            f"{workstream['area']}: {workstream['title']} - Check: {primary_check} Fix path: {primary_fix}"
+        )
+        shared_checks = extend_unique(shared_checks, workstream["checks"][:1], limit=6)
+        shared_resolution = extend_unique(shared_resolution, workstream["resolution"][:1], limit=5)
+
+    best_tcodes = derive_best_tcodes(extract_tcodes(query), best_tcodes)
+    priority = infer_priority(query, environment)
+    context_preview = context_snippets[0] if context_snippets else "No additional note snippet was available."
+
+    return f"""Incident
+- Mixed SAP incident with multiple likely failure domains
+- Areas: {', '.join(primary_areas) if primary_areas else 'Basis'}
+- Confidence: Medium
+
+Likely Root Cause
+- The ticket text combines multiple strong SAP symptoms, so the incident should be split into parallel workstreams instead of forcing a single diagnosis.
+
+Priority
+- {priority}
+
+Likely Owner
+{format_list(owners, "SAP application support")}
+
+Required Inputs
+{format_list(required_inputs, "Collect enough detail to separate the individual issues.")}
+
+{build_environment_section(environment)}
+
+{build_system_section(system_context)}
+
+{build_analysis_section(analysis_context)}
+
+Issue Mix
+{format_list(issue_mix, "No mixed-issue breakdown was derived.")}
+
+Parallel Workstreams
+{format_list(parallel_workstreams, "No workstreams were derived.")}
+
+Best T-codes
+{format_list(best_tcodes, "No T-code available")}
+
+Checks
+{format_list(shared_checks, "Collect enough detail to classify the incident.")}
+
+Resolution
+{format_list(shared_resolution, "Apply the safest validated fix and retest.")}
+
+Cross-Issue Risks
+{format_list(shared_risks, "Use a controlled change plan when multiple symptoms are involved.")}
+
+Escalate If
+{format_list(escalation_lines, "Escalate when the issue affects production or cannot be reproduced safely.")}
+
+Why This Matched
+- Multiple strong runbook candidates were detected in the same ticket text.
+- The incident appears to span more than one SAP failure domain or support team.
+
+Supporting Context
+- Source: {context_source}
+- Snippet: {context_preview}"""
+
+
 def build_context(matches, query, include_vector=False):
     note_matches = search_local_notes(query)
 
@@ -749,13 +1653,13 @@ def build_context(matches, query, include_vector=False):
     sources = []
 
     if note_matches:
-        snippets.extend(note_matches)
+        snippets.extend(shorten_text(note, limit=420) for note in note_matches)
         sources.append("local SAP ticket notes")
 
     if include_vector:
         vector_matches = search_vector_context(query)
         if vector_matches:
-            snippets.extend(vector_matches)
+            snippets.extend(shorten_text(note, limit=420) for note in vector_matches)
             sources.append("FAISS knowledge base")
 
     if matches:
@@ -806,6 +1710,108 @@ def build_environment_section(environment):
     )
 
 
+def build_system_section(system_context):
+    system_lines = [system_context["system_label"]]
+    if system_context.get("system_type"):
+        system_lines.append(f"Platform: {system_context['system_type']}")
+    if system_context.get("system_tools"):
+        system_lines.append(f"Core tools: {', '.join(system_context['system_tools'][:6])}")
+
+    subsystem_lines = [system_context.get("subsystem_label", "Shared service or general system scope")]
+    if system_context.get("subsystem_focus"):
+        subsystem_lines.append(system_context["subsystem_focus"])
+
+    context_lines = []
+    if system_context.get("matched_terms"):
+        context_lines.append(f"Detected from: {', '.join(system_context['matched_terms'][:4])}")
+    context_lines.append("Use the owning system boundary before assigning fixes, transports, or message reprocessing.")
+
+    return (
+        f"System\n"
+        f"{format_list(system_lines, 'Cross-system SAP landscape')}\n\n"
+        f"Subsystem\n"
+        f"{format_list(subsystem_lines, 'Shared SAP service area')}\n\n"
+        f"System Context\n"
+        f"{format_list(context_lines, 'Narrow the incident to the owning SAP stack and connected services.')}\n\n"
+        f"Integration Points\n"
+        f"{format_list(system_context.get('integration_points'), 'No specific integration point was identified yet.')}\n\n"
+        f"Integration Guidance\n"
+        f"{format_list(system_context.get('integration_guidance'), 'Validate the owning system and subsystem before changing the fix path.')}"
+    )
+
+
+def build_analysis_section(analysis_context):
+    if not analysis_context:
+        return ""
+
+    nlp_lines = []
+    entities = analysis_context.get("entities", {})
+    if entities.get("tcodes"):
+        nlp_lines.append(f"T-codes from ticket or image: {', '.join(entities['tcodes'])}")
+    if entities.get("transports"):
+        nlp_lines.append(f"Transport references: {', '.join(entities['transports'])}")
+    if entities.get("status_codes"):
+        nlp_lines.append(f"Status codes: {', '.join(entities['status_codes'])}")
+    if entities.get("http_codes"):
+        nlp_lines.append(f"HTTP errors: {', '.join(entities['http_codes'])}")
+    if entities.get("users"):
+        nlp_lines.append(f"Users detected: {', '.join(entities['users'])}")
+    if analysis_context.get("domain_signals"):
+        for signal in analysis_context["domain_signals"][:3]:
+            nlp_lines.append(
+                f"{signal['domain']} signal from keywords: {', '.join(signal['signals'])}"
+            )
+
+    neural_lines = [
+        f"{item['label']} [{item['type']}] score {item['score']}"
+        for item in analysis_context.get("semantic_matches", [])[:4]
+    ]
+
+    image_lines = list(analysis_context.get("image_findings", [])[:5])
+    if analysis_context.get("ocr_text"):
+        image_lines.append(
+            f"OCR preview: {analysis_context['ocr_text'][:220]}{'...' if len(analysis_context['ocr_text']) > 220 else ''}"
+        )
+
+    sections = []
+    if nlp_lines:
+        sections.append(f"NLP Signals\n{format_list(nlp_lines, 'No NLP signals detected.')}")
+    if neural_lines:
+        sections.append(f"Neural Matches\n{format_list(neural_lines, 'No neural semantic matches were available.')}")
+    if image_lines:
+        sections.append(f"Image Findings\n{format_list(image_lines, 'No image findings were captured.')}")
+    return "\n\n".join(sections)
+
+
+def build_matching_query(query, analysis_context):
+    if not analysis_context:
+        return query
+
+    evidence_lines = [query.strip()]
+    ocr_text = shorten_text(analysis_context.get("ocr_text", ""), limit=500)
+    if ocr_text:
+        evidence_lines.append(f"OCR text: {ocr_text}")
+
+    entities = analysis_context.get("entities", {})
+    exact_evidence = []
+    for label, key in [
+        ("T-codes", "tcodes"),
+        ("Transports", "transports"),
+        ("HTTP errors", "http_codes"),
+        ("Statuses", "status_codes"),
+        ("Return codes", "return_codes"),
+        ("Queues", "queues"),
+        ("IDocs", "idocs"),
+        ("Users", "users"),
+    ]:
+        values = entities.get(key)
+        if values:
+            exact_evidence.append(f"{label}: {', '.join(values[:4])}")
+
+    evidence_lines.extend(exact_evidence[:6])
+    return "\n".join(line for line in evidence_lines if line)
+
+
 def build_openai_prompt(query, environment, base_answer, context_snippets, context_source):
     context_block = "\n\n".join(context_snippets) if context_snippets else "No additional SAP context snippets were available."
     environment_name = environment or "ALL"
@@ -832,13 +1838,9 @@ Retrieved SAP context:
 Context sources:
 {context_source}
 
-    Return a concise ticket-resolution playbook with these sections:
-- Incident
-- Root Cause
-- T-codes
-- Checks
-- Fix Plan
-- Risks / Escalation
+Return a concise ticket-resolution playbook that preserves the section headings already present
+in the local runbook answer whenever possible. Keep the response safe for enterprise SAP
+operations, especially for production systems.
 """.strip()
 
 
@@ -854,6 +1856,14 @@ def condense_playbook_for_local_llm(base_answer):
     important_sections = {
         "Incident",
         "Likely Root Cause",
+        "System",
+        "Subsystem",
+        "System Context",
+        "Integration Points",
+        "Integration Guidance",
+        "NLP Signals",
+        "Neural Matches",
+        "Image Findings",
         "Environment",
         "Environment Guidance",
         "Best T-codes",
@@ -1081,16 +2091,8 @@ def summarize_ollama_failure(exc):
 
 
 def clean_ollama_response(text):
-    header_names = {
-        "Incident",
-        "Likely Root Cause",
-        "Environment",
-        "Guidance",
-        "Best T-codes",
-        "Checks",
-        "Resolution",
-        "Escalate If",
-    }
+    header_names = RUNBOOK_HEADINGS.union(RUNBOOK_HEADING_ALIASES)
+    header_pattern = "|".join(re.escape(name) for name in sorted(header_names, key=len, reverse=True))
     cleaned_lines = []
     last_line_was_header = False
     for raw_line in text.splitlines():
@@ -1110,19 +2112,24 @@ def clean_ollama_response(text):
         if re.match(r"^-?\s*(here is|below is).*(answer|draft)", normalized, re.IGNORECASE):
             continue
         inline_header = re.match(
-            r"^(Incident|Likely Root Cause|Environment|Guidance|Best T-codes|Checks|Resolution|Escalate If)\s*[:-]\s*(.+)$",
+            rf"^({header_pattern})\s*[:-]\s*(.+)$",
             normalized,
         )
         if inline_header:
-            cleaned_lines.append(inline_header.group(1))
+            cleaned_lines.append(normalize_runbook_heading(inline_header.group(1)))
             remainder = inline_header.group(2).strip()
             remainder_parts = [part.strip() for part in re.split(r"\s+-\s+", remainder) if part.strip()]
             for part in remainder_parts or [remainder]:
                 cleaned_lines.append(f"- {part}")
             last_line_was_header = False
             continue
-        if normalized.endswith(":") and normalized[:-1] in header_names:
-            cleaned_lines.append(normalized[:-1])
+        normalized_header = normalize_runbook_heading(normalized)
+        if normalized_header in RUNBOOK_HEADINGS:
+            cleaned_lines.append(normalized_header)
+            last_line_was_header = True
+            continue
+        if normalized.endswith(":") and normalize_runbook_heading(normalized[:-1]) in RUNBOOK_HEADINGS:
+            cleaned_lines.append(normalize_runbook_heading(normalized[:-1]))
             last_line_was_header = True
             continue
         if last_line_was_header and not normalized.startswith("-"):
@@ -1136,6 +2143,33 @@ def clean_ollama_response(text):
 
     cleaned = "\n".join(cleaned_lines).strip()
     return cleaned or text.strip()
+
+
+def sanitize_output_text(text):
+    replacements = {
+        "•": "-",
+        "–": "-",
+        "—": "-",
+        "−": "-",
+        "∕": "/",
+        "／": "/",
+        "’": "'",
+        "“": '"',
+        "”": '"',
+        "\xa0": " ",
+    }
+    cleaned_chars = []
+    for char in str(text):
+        char = replacements.get(char, char)
+        codepoint = ord(char)
+        if codepoint in {10, 13, 9}:
+            cleaned_chars.append(char)
+            continue
+        if 0xE000 <= codepoint <= 0xF8FF:
+            continue
+        if char.isprintable():
+            cleaned_chars.append(char)
+    return "".join(cleaned_chars).encode("ascii", "ignore").decode("ascii")
 
 
 def get_open_source_backend_order(backend=None):
@@ -1174,7 +2208,7 @@ def try_openai_compatible_enhancement(query, environment, base_answer, context_s
                 },
             ],
             temperature=0.1,
-            max_tokens=int(get_config("OPEN_SOURCE_API_MAX_TOKENS", "260")),
+            max_tokens=get_openai_compatible_max_tokens(),
         )
         text = (
             response.choices[0].message.content
@@ -1373,18 +2407,59 @@ def enhance_answer_with_open_source(
     return base_answer
 
 
-def build_ticket_answer(query, environment):
-    matches = find_ticket_matches(query)
-    context_snippets, context_source = build_context(matches, query, include_vector=False)
-    resolved_environment = resolve_environment(environment, query)
+def build_ticket_answer(query, environment, system=None, subsystem=None, analysis_context=None, matching_query=None, scope_query=None):
+    matching_query = matching_query or query
+    scope_query = scope_query or query
+    matches = find_ticket_matches(matching_query, top_k=4)
+    context_snippets, context_source = build_context(matches, matching_query, include_vector=False)
+    resolved_environment = resolve_environment(environment, scope_query)
+    system_context = resolve_system_context(scope_query, system=system, subsystem=subsystem)
+    universal_patterns = find_universal_pattern(matching_query, top_k=4)
+    mixed_issue_workstreams = detect_mixed_issue_workstreams(matching_query, matches, universal_patterns)
+
+    if mixed_issue_workstreams:
+        return build_mixed_issue_answer(
+            matching_query,
+            context_snippets,
+            context_source,
+            resolved_environment,
+            system_context,
+            mixed_issue_workstreams,
+            analysis_context=analysis_context,
+        )
 
     if not matches or matches[0]["score"] < 10:
-        return build_generic_triage_answer(query, context_snippets, context_source, resolved_environment)
+        return build_generic_triage_answer(
+            matching_query,
+            context_snippets,
+            context_source,
+            resolved_environment,
+            system_context=system_context,
+            analysis_context=analysis_context,
+        )
 
     best_match = matches[0]
     ticket = best_match["ticket"]
     confidence = summarize_confidence(matches)
+    strong_reason_markers = ("matched error signal", "matched T-code", "exact title match")
+    has_strong_reason = any(reason.startswith(strong_reason_markers) for reason in best_match["reasons"])
+
+    if confidence == "Low" and not has_strong_reason:
+        return build_generic_triage_answer(
+            matching_query,
+            context_snippets,
+            context_source,
+            resolved_environment,
+            system_context=system_context,
+            analysis_context=analysis_context,
+        )
+
     related = [match["ticket"]["title"] for match in matches[1:] if match["score"] >= 10]
+    priority = infer_priority(matching_query, resolved_environment)
+    owners = get_area_owners(ticket["area"])
+    query_tcodes = sorted(extract_tcodes(matching_query))
+    best_tcodes = derive_best_tcodes(query_tcodes, ticket["tcodes"])
+    required_inputs = derive_required_inputs(matching_query, ticket["area"], best_tcodes)
 
     reason_lines = best_match["reasons"][:3] or ["matched the closest SAP incident pattern available"]
     context_preview = context_snippets[0] if context_snippets else "No additional note snippet was available."
@@ -1397,10 +2472,23 @@ def build_ticket_answer(query, environment):
 Likely Root Cause
 - {ticket['root_cause']}
 
+Priority
+- {priority}
+
+Likely Owner
+{format_list(owners, "SAP application support")}
+
+Required Inputs
+{format_list(required_inputs, "Collect the exact SAP error text and affected business object.")}
+
 {build_environment_section(resolved_environment)}
 
+{build_system_section(system_context)}
+
+{build_analysis_section(analysis_context)}
+
 Best T-codes
-{format_list(ticket['tcodes'], "No T-code available")}
+{format_list(best_tcodes, "No T-code available")}
 
 Checks
 {format_list(ticket['checks'], "Capture the exact error and validate the impacted transaction.")}
@@ -1422,50 +2510,98 @@ Related Playbooks
 {format_list(related, "No close secondary match found.")}"""
 
 
-def build_generic_triage_answer(query, context_snippets, context_source, environment):
+def build_generic_triage_answer(query, context_snippets, context_source, environment, system_context=None, analysis_context=None):
+    system_context = system_context or resolve_system_context(query)
     query_tcodes = sorted(extract_tcodes(query))
+    universal_patterns = find_universal_pattern(query)
+    best_pattern = universal_patterns[0]["pattern"] if universal_patterns else None
+    pattern_reasons = universal_patterns[0]["reasons"][:3] if universal_patterns else []
+    area = best_pattern["area"] if best_pattern else "Basis"
+    title = best_pattern["title"] if best_pattern else "Unclassified SAP operational issue"
+    priority = infer_priority(query, environment)
+    owners = get_area_owners(area)
+    best_tcodes = derive_best_tcodes(query_tcodes, [], best_pattern)
+    required_inputs = derive_required_inputs(query, area, best_tcodes, pattern=best_pattern)
     default_checks = [
         "Capture the exact SAP error text, screenshot, and business step that failed.",
         "Identify the affected user, client, company code, plant, and document number if applicable.",
         "Check the most relevant technical traces such as SU53, ST22, SM21, SM13, SM37, or SM59 based on the symptom.",
     ]
+    if best_pattern:
+        default_checks = best_pattern["checks"] + default_checks
     if query_tcodes:
         default_checks.insert(1, f"Validate the mentioned transaction code(s): {', '.join(query_tcodes)}.")
 
+    root_cause_lines = (
+        best_pattern["causes"]
+        if best_pattern
+        else ["The current ticket text does not strongly match a single runbook in the local SAP catalog."]
+    )
+    resolution_lines = (
+        best_pattern["resolution"]
+        if best_pattern
+        else [
+            "Start with the error log or failed transaction that reproduces the issue.",
+            "Gather the exact technical message and route the ticket to the right module after basic checks.",
+            "Add ticket details such as module, transaction, error code, and impact to improve the diagnosis.",
+        ]
+    )
+    escalation_lines = [
+        "The issue blocks production users or financial/logistics postings.",
+        "The ticket requires functional customizing or ABAP changes.",
+    ]
+    if best_pattern:
+        escalation_lines = [
+            "The issue is affecting a broad user group, production processing, or period-end operations.",
+            f"The identified area '{area}' needs specialist support beyond first-line triage.",
+        ]
+
+    why_matched = pattern_reasons or ["used the best universal SAP support pattern available"]
+
     return f"""Incident
-- Unclassified SAP ticket
-- Area: Needs more detail
-- Confidence: Low
+- {title}
+- Area: {area}
+- Confidence: {"Medium" if best_pattern else "Low"}
 
 Likely Root Cause
-- The current ticket text does not strongly match a single runbook in the local SAP catalog.
+{format_list(root_cause_lines, "The root cause still needs more evidence.")}
+
+Priority
+- {priority}
+
+Likely Owner
+{format_list(owners, "SAP application support")}
+
+Required Inputs
+{format_list(required_inputs, "Collect enough detail to classify the incident.")}
 
 {build_environment_section(environment)}
 
+{build_system_section(system_context)}
+
+{build_analysis_section(analysis_context)}
+
 Best T-codes
-- SU53
-- ST22
-- SM21
-- SM37
+{format_list(best_tcodes, "No T-code available")}
 
 Checks
 {format_list(default_checks, "Collect enough detail to classify the incident.")}
 
 Resolution
-- Start with the error log or failed transaction that reproduces the issue.
-- Gather the exact technical message and route the ticket to the right module after basic checks.
-- Add ticket details such as module, transaction, error code, and impact to improve the diagnosis.
+{format_list(resolution_lines, "Apply the safest validated fix and retest.")}
 
 Escalate If
-- The issue blocks production users or financial/logistics postings.
-- The ticket requires functional customizing or ABAP changes.
+{format_list(escalation_lines, "Escalate when the issue affects production or cannot be reproduced safely.")}
+
+Why This Matched
+{format_list(why_matched, "matched the closest universal SAP support pattern")}
 
 Supporting Context
 - Source: {context_source}
 - Snippet: {context_snippets[0] if context_snippets else 'No supporting note snippet was available.'}"""
 
 
-def ask_sap(query, environment=None, provider="auto"):
+def ask_sap(query, environment=None, provider="auto", system=None, subsystem=None, analysis_context=None):
     clean_query = query.strip()
     if not clean_query:
         return "Please enter an SAP ticket, issue, or question."
@@ -1473,6 +2609,7 @@ def ask_sap(query, environment=None, provider="auto"):
     provider = str(provider or "auto").strip().lower()
     provider_aliases = {
         "oss": "open_source",
+        "open_llm": "openai_compatible",
         "open_source_api": "openai_compatible",
         "local_api": "openai_compatible",
         "hf": "hf_local",
@@ -1480,128 +2617,161 @@ def ask_sap(query, environment=None, provider="auto"):
     }
     provider = provider_aliases.get(provider, provider)
 
-    resolved_environment = resolve_environment(environment, clean_query)
-    base_answer = build_ticket_answer(clean_query, resolved_environment)
+    matching_query = build_matching_query(clean_query, analysis_context)
+    scope_query = clean_query
+    if analysis_context and analysis_context.get("ocr_text"):
+        scope_query = f"{clean_query}\n{shorten_text(analysis_context.get('ocr_text', ''), limit=500)}"
+
+    resolved_environment = resolve_environment(environment, scope_query)
+    base_answer = build_ticket_answer(
+        clean_query,
+        resolved_environment,
+        system=system,
+        subsystem=subsystem,
+        analysis_context=analysis_context,
+        matching_query=matching_query,
+        scope_query=scope_query,
+    )
 
     if provider == "rules":
-        return base_answer
+        return sanitize_output_text(base_answer)
 
     if provider == "openai" and not openai_is_configured():
-        return (
+        return sanitize_output_text(
+            (
             "OpenAI mode was selected, but OPENAI_API_KEY is not configured.\n\n"
             f"{base_answer}"
+            )
         )
 
     if provider == "ollama" and not ollama_is_available():
-        return (
+        return sanitize_output_text(
+            (
             "Ollama mode was selected, but the configured Ollama model is not available at the local endpoint.\n\n"
             f"{base_answer}"
+            )
         )
 
     if provider == "open_source" and not open_source_is_available():
-        return (
+        return sanitize_output_text(
+            (
             "Open Source AI mode was selected, but no supported open-source backend is available. Configure Ollama, an OpenAI-compatible local API, or a Hugging Face local model.\n\n"
             f"{base_answer}"
+            )
         )
 
     if provider == "openai_compatible" and not openai_compatible_is_configured():
-        return (
-            "OpenAI-compatible mode was selected, but OPEN_SOURCE_API_BASE_URL and OPEN_SOURCE_API_MODEL are not configured.\n\n"
+        return sanitize_output_text(
+            (
+            "Open LLM mode was selected, but OPEN_LLM_API_BASE_URL and OPEN_LLM_MODEL are not configured. The legacy OPEN_SOURCE_API_* names also still work.\n\n"
             f"{base_answer}"
+            )
         )
 
     if provider == "hf_local" and not hf_local_is_configured():
-        return (
+        return sanitize_output_text(
+            (
             "HF local mode was selected, but HF_LOCAL_MODEL is not configured.\n\n"
             f"{base_answer}"
+            )
         )
 
-    matches = find_ticket_matches(clean_query)
+    matches = find_ticket_matches(matching_query)
     context_snippets, context_source = build_context(
         matches,
-        clean_query,
+        matching_query,
         include_vector=is_vector_context_enabled(),
     )
 
     if provider == "openai" and openai_is_configured():
-        return enhance_answer_with_openai(
-            clean_query,
-            resolved_environment,
-            base_answer,
-            context_snippets,
-            context_source,
+        return sanitize_output_text(
+            enhance_answer_with_openai(
+                matching_query,
+                resolved_environment,
+                base_answer,
+                context_snippets,
+                context_source,
+            )
         )
 
     if provider == "ollama" and ollama_is_available():
-        return enhance_answer_with_ollama(
-            clean_query,
-            resolved_environment,
-            base_answer,
-            context_snippets,
-            context_source,
+        return sanitize_output_text(
+            enhance_answer_with_ollama(
+                matching_query,
+                resolved_environment,
+                base_answer,
+                context_snippets,
+                context_source,
+            )
         )
 
     if provider == "open_source":
-        return enhance_answer_with_open_source(
-            clean_query,
-            resolved_environment,
-            base_answer,
-            context_snippets,
-            context_source,
-            backend=get_open_source_backend(),
+        return sanitize_output_text(
+            enhance_answer_with_open_source(
+                matching_query,
+                resolved_environment,
+                base_answer,
+                context_snippets,
+                context_source,
+                backend=get_open_source_backend(),
+            )
         )
 
     if provider == "openai_compatible":
-        return enhance_answer_with_open_source(
-            clean_query,
-            resolved_environment,
-            base_answer,
-            context_snippets,
-            context_source,
-            backend="openai_compatible",
+        return sanitize_output_text(
+            enhance_answer_with_open_source(
+                matching_query,
+                resolved_environment,
+                base_answer,
+                context_snippets,
+                context_source,
+                backend="openai_compatible",
+            )
         )
 
     if provider == "hf_local":
-        return enhance_answer_with_open_source(
-            clean_query,
-            resolved_environment,
-            base_answer,
-            context_snippets,
-            context_source,
-            backend="hf_local",
+        return sanitize_output_text(
+            enhance_answer_with_open_source(
+                matching_query,
+                resolved_environment,
+                base_answer,
+                context_snippets,
+                context_source,
+                backend="hf_local",
+            )
         )
 
     if provider == "auto" and openai_is_configured():
         openai_answer = try_openai_enhancement(
-            clean_query,
+            matching_query,
             resolved_environment,
             base_answer,
             context_snippets,
             context_source,
         )
         if openai_answer:
-            return openai_answer
+            return sanitize_output_text(openai_answer)
         if get_openai_failure_notice():
-            return f"{get_openai_failure_notice()}\n\n{base_answer}"
+            return sanitize_output_text(f"{get_openai_failure_notice()}\n\n{base_answer}")
 
     if provider == "auto" and not openai_is_configured() and open_source_is_available():
         open_source_answer = try_open_source_enhancement(
-            clean_query,
+            matching_query,
             resolved_environment,
             base_answer,
             context_snippets,
             context_source,
         )
         if open_source_answer:
-            return open_source_answer
+            return sanitize_output_text(open_source_answer)
 
     if provider == "auto":
         open_source_notice = get_open_source_failure_notice()
         if open_source_notice:
-            return f"{open_source_notice}\n\n{base_answer}"
-        return base_answer
+            return sanitize_output_text(f"{open_source_notice}\n\n{base_answer}")
+        return sanitize_output_text(base_answer)
 
-    return base_answer
+    return sanitize_output_text(base_answer)
 
 
 if __name__ == "__main__":

@@ -11,3 +11,5 @@ openai
 requests
 beautifulsoup4
 python-dotenv
+pillow
+pytesseract

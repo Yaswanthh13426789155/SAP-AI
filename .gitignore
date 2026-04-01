@@ -8,6 +8,7 @@ sap_dataset.txt
 *.pyo
 *.log
 .env
+sap_landscape.json
 .venv/
 venv/
 New Text Document.txt

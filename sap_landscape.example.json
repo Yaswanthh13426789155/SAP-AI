@@ -1,0 +1,36 @@
+{
+  "S4HANA": {
+    "subsystems": {
+      "TREASURY": {
+        "label": "Treasury and risk management",
+        "aliases": ["treasury", "trm", "cash management"],
+        "focus": "Treasury postings, cash management, and risk processing incidents.",
+        "integration_points": ["Bank connectivity", "Market data feeds", "Approval workflows"],
+        "guidance": [
+          "Validate the bank, market data, or approval dependency before changing treasury configuration."
+        ]
+      }
+    }
+  },
+  "Z_EWM_HUB": {
+    "label": "Customer EWM Hub",
+    "type": "Custom regional warehouse platform",
+    "aliases": ["ewm hub", "warehouse hub", "regional ewm"],
+    "integration_points": ["qRFC", "RFC / BAPI", "IDoc", "Warehouse RF devices"],
+    "monitoring_tools": ["/SCWM/MON", "SMQ2", "SM59", "ST22"],
+    "guidance": [
+      "Validate the warehouse task boundary and queue ownership before replaying logistics messages."
+    ],
+    "subsystems": {
+      "OUTBOUND": {
+        "label": "Outbound warehouse execution",
+        "aliases": ["outbound delivery", "wave", "picking", "loading"],
+        "focus": "Picking, staging, loading, and outbound delivery execution.",
+        "integration_points": ["Delivery documents", "Queues", "RF confirmations"],
+        "guidance": [
+          "Check the delivery document and queue handoff before reprocessing warehouse tasks."
+        ]
+      }
+    }
+  }
+}

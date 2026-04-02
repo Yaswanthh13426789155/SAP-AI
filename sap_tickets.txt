@@ -1,0 +1,39 @@
+User cannot login to SAP
+Error: User locked
+Solution: Unlock using SU01 and reset password
+
+Background job cancelled
+Error: Authorization missing
+Solution: Assign role using PFCG and reschedule job
+
+Transport failed with RC 8
+Error: Object missing
+Solution: Re-import transport using STMS
+
+Short dump error TSV_TNEW_PAGE_ALLOC_FAILED
+Error: Memory issue
+Solution: Increase memory in RZ10
+
+System running slow
+Error: High CPU usage
+Solution: Check ST06 and optimize processes
+
+RFC connection failed
+Error: Wrong credentials
+Solution: Fix SM59 configuration
+
+Database full
+Error: Tablespace full
+Solution: Extend DB using DB02
+
+Update terminated
+Error: V1 update failed
+Solution: Reprocess using SM13
+
+User authorization error
+Error: Missing authorization
+Solution: Check SU53 and assign role
+
+Lock entry issue
+Error: Object locked
+Solution: Delete lock in SM12

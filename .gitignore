@@ -1,0 +1,15 @@
+__pycache__/
+.cache/
+.streamlit/
+.codex/
+sap_index/
+sap_web_data.txt
+sap_dataset.txt
+*.pyc
+*.pyo
+*.log
+.env
+sap_landscape.json
+.venv/
+venv/
+New Text Document.txt

@@ -1,0 +1,5 @@
+# Add SAP web pages to ingest into sap_web_data.txt.
+# Keep these on official SAP domains such as help.sap.com, community.sap.com, or api.sap.com.
+https://help.sap.com/docs/
+https://api.sap.com/
+# You can add specific SAP Community article URLs here if they allow direct fetch access.

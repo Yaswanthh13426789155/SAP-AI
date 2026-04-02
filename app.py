@@ -8,7 +8,9 @@ from dotenv import load_dotenv
 
 from sap_intelligence import neural_nlp_is_available, ocr_is_available
 from sap_landscape import get_landscape_counts, has_landscape_override, resolve_system_context
+from sap_reasoner import build_advanced_reasoning
 from sap_ticket_catalog import TICKET_CATALOG
+from sap_training import load_training_status, predict_ticket_candidates, router_model_available
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -160,6 +162,9 @@ RUNBOOK_HEADINGS = {
     "Issue Mix",
     "Parallel Workstreams",
     "Cross-Issue Risks",
+    "Advanced Diagnosis",
+    "Failure Chain",
+    "Decision Path",
     "Guidance",
     "Best T-codes",
     "Checks",
@@ -182,6 +187,8 @@ RUNBOOK_HEADING_ALIASES = {
     "OCR Findings": "Image Findings",
     "Workstreams": "Parallel Workstreams",
     "Cross-System Risks": "Cross-Issue Risks",
+    "Reasoning": "Advanced Diagnosis",
+    "Diagnostic Path": "Decision Path",
 }
 AREA_OWNERS = {
     "Basis": [
@@ -207,6 +214,34 @@ AREA_OWNERS = {
     "SD": [
         "SAP SD functional support",
         "ABAP or integration team if pricing logic, outputs, or interfaces are custom",
+    ],
+    "MM/SD": [
+        "SAP MM or SD functional support depending on the document flow affected",
+        "ABAP or Basis support if the failure is technical rather than transactional",
+    ],
+    "Fiori/Gateway": [
+        "SAP Fiori or Gateway support team",
+        "Security or backend application support if the app failure is role or service dependent",
+    ],
+    "Analytics": [
+        "SAP BW/4HANA or analytics support team",
+        "Source-system or Basis support if extraction, queues, or process chains are failing",
+    ],
+    "HANA / DB": [
+        "SAP HANA database support",
+        "Basis or infrastructure team for host, memory, replication, or backup issues",
+    ],
+    "Workflow / MDG": [
+        "SAP workflow or MDG functional support",
+        "ABAP or Basis support if the workflow runtime or replication layer is failing technically",
+    ],
+    "ALM / Governance": [
+        "SAP Solution Manager, ChaRM, or GRC support team",
+        "Basis or security support if the issue is caused by connectors, roles, or transport governance",
+    ],
+    "Cross-System": [
+        "SAP application support",
+        "Basis, integration, or functional owner depending on the first failing component identified",
     ],
 }
 UNIVERSAL_SUPPORT_PATTERNS = [
@@ -610,6 +645,7 @@ def load_openai_client():
 def runtime_status():
     landscape_counts = get_landscape_counts()
     open_source_backends = get_available_open_source_backends()
+    training_status = load_training_status()
     return {
         "openai_configured": openai_is_configured(),
         "openai_model": get_openai_model(),
@@ -635,6 +671,15 @@ def runtime_status():
         "custom_landscape_present": has_landscape_override(),
         "ocr_available": ocr_is_available(),
         "neural_nlp_available": neural_nlp_is_available(),
+        "trained_router_ready": router_model_available(),
+        "training_state": training_status.get("state", "idle"),
+        "training_message": training_status.get("message", ""),
+        "training_best_val_accuracy": training_status.get("best_val_accuracy", 0.0),
+        "training_best_val_macro_f1": training_status.get("best_val_macro_f1", 0.0),
+        "training_last_updated": training_status.get("updated_at", ""),
+        "training_last_trained_at": training_status.get("last_trained_at", ""),
+        "training_elapsed_minutes": training_status.get("elapsed_minutes", 0.0),
+        "training_examples_total": training_status.get("examples_total", 0),
     }
 
 
@@ -773,12 +818,15 @@ def build_next_best_actions(sections):
 def build_solve_now_plan(sections, environment):
     steps = []
     incident = join_section_items(sections.get("Incident"), limit=1) or "the SAP incident"
+    reasoning_step = first_section_item(sections, "Decision Path")
     primary_check = first_section_item(sections, "Checks")
     primary_fix = first_section_item(sections, "Resolution")
     confirmation_step = (sections.get("Resolution") or [""])[1] or (sections.get("Checks") or ["", ""])[1]
     escalation = first_section_item(sections, "Escalate If")
 
     steps.append(f"Stabilize scope in {environment}: confirm the affected users, business step, and exact symptom for {incident}.")
+    if reasoning_step:
+        steps.append(reasoning_step)
     if primary_check:
         steps.append(primary_check)
     if primary_fix:
@@ -1234,6 +1282,25 @@ def score_ticket(ticket, query, query_text, query_tokens, query_tcodes):
     }
 
 
+def ticket_reference_terms(ticket):
+    terms = set()
+    for value in (
+        [ticket["title"], ticket["root_cause"], ticket["area"]]
+        + ticket.get("keywords", [])
+        + ticket.get("error_signals", [])
+        + ticket.get("symptoms", [])
+        + ticket.get("tcodes", [])
+    ):
+        for token in tokenize(value):
+            if token not in STOPWORDS:
+                terms.add(token)
+    return terms
+
+
+def ticket_query_overlap(ticket, query_tokens):
+    return len(ticket_reference_terms(ticket).intersection(set(query_tokens or [])))
+
+
 def search_local_notes(query, top_k=3):
     filtered_query_tokens = [token for token in tokenize(query) if token not in STOPWORDS]
     query_terms = Counter(filtered_query_tokens)
@@ -1275,15 +1342,62 @@ def search_vector_context(query):
     return snippets
 
 
+def blend_router_matches(query, scored, top_k=3):
+    router_candidates = predict_ticket_candidates(query, top_k=max(6, top_k))
+    if not router_candidates:
+        return scored
+
+    query_tokens = {token for token in tokenize(query) if token not in STOPWORDS}
+    router_by_index = {candidate["ticket_index"]: candidate for candidate in router_candidates}
+    enriched = []
+    for item in scored:
+        candidate = router_by_index.get(item["ticket_index"])
+        overlap = ticket_query_overlap(item["ticket"], query_tokens)
+        if candidate and candidate["probability"] >= 0.12:
+            if overlap == 0 and candidate["probability"] < 0.55:
+                enriched.append(item)
+                continue
+            boost = max(1, int(round(candidate["probability"] * (12 + min(overlap, 4)))))
+            item["score"] += boost
+            item["reasons"] = extend_unique(
+                item["reasons"],
+                [f"trained SAP router confidence {candidate['probability']:.2f}"],
+                limit=6,
+            )
+        enriched.append(item)
+
+    existing_indices = {item["ticket_index"] for item in enriched}
+    for candidate in router_candidates[: max(4, top_k)]:
+        if candidate["ticket_index"] in existing_indices:
+            continue
+        ticket = TICKET_CATALOG[candidate["ticket_index"]]
+        overlap = ticket_query_overlap(ticket, query_tokens)
+        if candidate["probability"] < 0.72 or overlap < 2:
+            continue
+        enriched.append(
+            {
+                "ticket": ticket,
+                "ticket_index": candidate["ticket_index"],
+                "score": 4 + int(round(candidate["probability"] * 14)) + overlap,
+                "reasons": [f"trained SAP router confidence {candidate['probability']:.2f}"],
+            }
+        )
+
+    return enriched
+
+
 def find_ticket_matches(query, top_k=3):
     query_text = normalize_text(query)
     query_tokens = {token for token in tokenize(query) if token not in STOPWORDS}
     query_tcodes = extract_tcodes(query)
 
-    scored = [
-        score_ticket(ticket, query, query_text, query_tokens, query_tcodes)
-        for ticket in TICKET_CATALOG
-    ]
+    scored = []
+    for ticket_index, ticket in enumerate(TICKET_CATALOG):
+        item = score_ticket(ticket, query, query_text, query_tokens, query_tcodes)
+        item["ticket_index"] = ticket_index
+        scored.append(item)
+
+    scored = blend_router_matches(query, scored, top_k=top_k)
     scored = [item for item in scored if item["score"] > 0]
     scored.sort(key=lambda item: item["score"], reverse=True)
     return scored[:top_k]
@@ -1301,6 +1415,152 @@ def summarize_confidence(matches):
     if top_score >= 18:
         return "Medium"
     return "Low"
+
+
+def derive_preferred_areas(system_context, analysis_context=None):
+    preferred = set()
+    system_id = str((system_context or {}).get("system_id", "")).upper()
+    subsystem_id = str((system_context or {}).get("subsystem_id", "")).upper()
+
+    system_map = {
+        "FIORI_GATEWAY": {"Fiori/Gateway"},
+        "HANA_DB": {"HANA / DB"},
+        "BW4HANA": {"Analytics", "Integration"},
+        "MDG": {"Workflow / MDG", "Integration"},
+        "SOLMAN": {"ALM / Governance", "Basis"},
+        "GRC": {"ALM / Governance", "Security"},
+        "PI_PO": {"Integration"},
+        "INTEGRATION_SUITE": {"Integration"},
+        "ECC": {"Basis", "Integration", "FI", "MM/SD", "Security"},
+        "S4HANA": {"Basis", "FI", "MM/SD", "Fiori/Gateway", "Workflow / MDG", "Cross-System"},
+    }
+    subsystem_map = {
+        "LAUNCHPAD": {"Fiori/Gateway"},
+        "ODATA": {"Fiori/Gateway"},
+        "PERFORMANCE": {"HANA / DB", "Basis"},
+        "REPLICATION": {"HANA / DB", "Integration", "Workflow / MDG"},
+        "DATA": {"Analytics", "Integration"},
+        "REPORTING": {"Analytics"},
+        "WORKFLOW": {"Workflow / MDG", "Fiori/Gateway"},
+        "CHARM": {"ALM / Governance", "Basis"},
+        "MONITORING": {"ALM / Governance", "Basis"},
+        "ACCESS": {"ALM / Governance", "Security"},
+        "FIREFIGHTER": {"ALM / Governance", "Security"},
+        "IFLOWS": {"Integration"},
+        "API": {"Integration", "Fiori/Gateway"},
+        "CHANNELS": {"Integration"},
+        "MESSAGING": {"Integration"},
+        "FINANCE": {"FI"},
+        "LOGISTICS": {"MM/SD"},
+    }
+    preferred.update(system_map.get(system_id, set()))
+    preferred.update(subsystem_map.get(subsystem_id, set()))
+
+    for signal in (analysis_context or {}).get("domain_signals", [])[:2]:
+        mapped = map_domain_signal_to_area(signal.get("domain"))
+        if mapped:
+            preferred.add(mapped)
+    return preferred
+
+
+def match_has_direct_evidence(match):
+    reasons = match.get("reasons", [])
+    direct_prefixes = (
+        "matched error signal",
+        "matched symptom",
+        "matched T-code",
+        "matched the incident title",
+        "exact title match",
+    )
+    return any(str(reason).startswith(direct_prefixes) for reason in reasons)
+
+
+def match_has_strong_reason(match):
+    for reason in match.get("reasons", []):
+        normalized = str(reason)
+        if normalized.startswith(
+            (
+                "matched error signal",
+                "matched T-code",
+                "matched the incident title",
+                "exact title match",
+            )
+        ):
+            return True
+        if normalized.startswith("trained SAP router confidence"):
+            try:
+                probability = float(normalized.rsplit(" ", 1)[-1])
+            except Exception:
+                probability = 0.0
+            if probability >= 0.75:
+                return True
+    return False
+
+
+def pattern_has_direct_evidence(item):
+    reasons = item.get("reasons", [])
+    direct_prefixes = ("matched signal", "matched T-code")
+    return any(str(reason).startswith(direct_prefixes) for reason in reasons)
+
+
+def rerank_matches_for_precision(matches, system_context, analysis_context=None):
+    preferred_areas = derive_preferred_areas(system_context, analysis_context=analysis_context)
+    specialized_scope = has_specific_scope((system_context or {}).get("system_label")) or has_specific_scope(
+        (system_context or {}).get("subsystem_label")
+    )
+    reranked = []
+
+    for item in matches or []:
+        adjusted = dict(item)
+        adjusted["reasons"] = list(item.get("reasons", []))
+        area = item["ticket"]["area"]
+        direct_evidence = match_has_direct_evidence(item)
+
+        if preferred_areas and area in preferred_areas:
+            adjusted["score"] += 6 if direct_evidence else 4
+            adjusted["reasons"] = extend_unique(adjusted["reasons"], [f"aligned with {area} scope"], limit=6)
+        elif preferred_areas and specialized_scope and area not in preferred_areas:
+            penalty = 6 if not direct_evidence else 3
+            adjusted["score"] -= penalty
+            adjusted["reasons"] = extend_unique(adjusted["reasons"], [f"less aligned with scoped SAP landscape"], limit=6)
+
+        if not direct_evidence and any(
+            str(reason).startswith("trained SAP router confidence") for reason in adjusted["reasons"]
+        ):
+            adjusted["score"] -= 3
+
+        reranked.append(adjusted)
+
+    reranked = [item for item in reranked if item["score"] > 0]
+    reranked.sort(key=lambda entry: entry["score"], reverse=True)
+    return reranked
+
+
+def rerank_patterns_for_precision(patterns, system_context, analysis_context=None):
+    preferred_areas = derive_preferred_areas(system_context, analysis_context=analysis_context)
+    specialized_scope = has_specific_scope((system_context or {}).get("system_label")) or has_specific_scope(
+        (system_context or {}).get("subsystem_label")
+    )
+    reranked = []
+
+    for item in patterns or []:
+        adjusted = dict(item)
+        adjusted["reasons"] = list(item.get("reasons", []))
+        area = item["pattern"]["area"]
+        direct_evidence = pattern_has_direct_evidence(item)
+
+        if preferred_areas and area in preferred_areas:
+            adjusted["score"] += 5
+            adjusted["reasons"] = extend_unique(adjusted["reasons"], [f"aligned with {area} scope"], limit=6)
+        elif preferred_areas and specialized_scope and area not in preferred_areas:
+            adjusted["score"] -= 4 if direct_evidence else 6
+            adjusted["reasons"] = extend_unique(adjusted["reasons"], [f"less aligned with scoped SAP landscape"], limit=6)
+
+        reranked.append(adjusted)
+
+    reranked = [item for item in reranked if item["score"] > 0]
+    reranked.sort(key=lambda entry: entry["score"], reverse=True)
+    return reranked
 
 
 def score_universal_pattern(pattern, query_text, query_tokens, query_tcodes):
@@ -1372,7 +1632,7 @@ def get_area_owners(area):
     )
 
 
-def derive_required_inputs(query, area, tcodes, pattern=None):
+def derive_required_inputs(query, area, tcodes, pattern=None, analysis_context=None, system_context=None):
     inputs = [
         "Exact SAP error text or message class and number",
         "Affected user, batch user, or interface technical account",
@@ -1404,18 +1664,44 @@ def derive_required_inputs(query, area, tcodes, pattern=None):
             if item and item not in inputs:
                 inputs.append(item[0].upper() + item[1:] if item[0].islower() else item)
 
-    if area in {"FI", "MM", "SD"}:
+    entities = (analysis_context or {}).get("entities", {})
+    if entities.get("users"):
+        inputs.append(f"Affected user(s) already detected: {', '.join(entities['users'][:3])}")
+    if entities.get("transports"):
+        inputs.append(f"Transport reference already detected: {', '.join(entities['transports'][:2])}")
+    if entities.get("idocs"):
+        inputs.append(f"IDoc number(s) already detected: {', '.join(entities['idocs'][:3])}")
+    if entities.get("queues"):
+        inputs.append(f"Queue name(s) already detected: {', '.join(entities['queues'][:2])}")
+    if entities.get("objects"):
+        inputs.append(f"Business object(s) already detected: {', '.join(entities['objects'][:3])}")
+    if entities.get("http_codes"):
+        inputs.append(f"HTTP status already detected: {', '.join(entities['http_codes'][:2])}")
+
+    if system_context and system_context.get("system_label"):
+        scope_text = system_context["system_label"]
+        subsystem_label = system_context.get("subsystem_label")
+        if subsystem_label and subsystem_label != system_context["system_label"]:
+            scope_text = f"{scope_text} / {subsystem_label}"
+        inputs.append(f"Owning SAP scope: {scope_text}")
+
+    if area in {"FI", "MM", "SD", "MM/SD", "Workflow / MDG"}:
         inputs.append("Organizational data such as company code, plant, sales area, or purchasing org")
 
-    return inputs[:7]
+    return extend_unique([], inputs, limit=8)
 
 
-def derive_best_tcodes(query_tcodes, matched_tcodes, pattern=None):
+def derive_best_tcodes(query_tcodes, matched_tcodes, pattern=None, system_context=None):
     ordered = []
     for bucket in [sorted(query_tcodes), matched_tcodes or [], pattern.get("tcodes", []) if pattern else []]:
         for tcode in bucket:
             if tcode and tcode not in ordered:
                 ordered.append(tcode)
+
+    if system_context:
+        for tool in system_context.get("system_tools", [])[:6]:
+            if tool and tool not in ordered:
+                ordered.append(tool)
 
     defaults = ["SU53", "ST22", "SM21", "SM37", "SM59"]
     for tcode in defaults:
@@ -1512,7 +1798,9 @@ def detect_mixed_issue_workstreams(query, matches, universal_patterns):
         " both ",
         " while ",
         " meanwhile ",
-        " multiple ",
+        " multiple issues ",
+        " multiple errors ",
+        " two issues ",
         " mixed ",
         " issue 1",
         " issue 2",
@@ -1567,7 +1855,13 @@ def build_mixed_issue_answer(query, context_snippets, context_source, environmen
         best_tcodes = extend_unique(best_tcodes, workstream["tcodes"], limit=6)
         required_inputs = extend_unique(
             required_inputs,
-            derive_required_inputs(query, workstream["area"], workstream["tcodes"]),
+            derive_required_inputs(
+                query,
+                workstream["area"],
+                workstream["tcodes"],
+                analysis_context=analysis_context,
+                system_context=system_context,
+            ),
             limit=8,
         )
         required_inputs = extend_unique(
@@ -1589,9 +1883,16 @@ def build_mixed_issue_answer(query, context_snippets, context_source, environmen
         shared_checks = extend_unique(shared_checks, workstream["checks"][:1], limit=6)
         shared_resolution = extend_unique(shared_resolution, workstream["resolution"][:1], limit=5)
 
-    best_tcodes = derive_best_tcodes(extract_tcodes(query), best_tcodes)
+    best_tcodes = derive_best_tcodes(extract_tcodes(query), best_tcodes, system_context=system_context)
     priority = infer_priority(query, environment)
     context_preview = context_snippets[0] if context_snippets else "No additional note snippet was available."
+    reasoning = build_advanced_reasoning(
+        query,
+        system_context,
+        analysis_context=analysis_context,
+        matches=[],
+        universal_patterns=[],
+    )
 
     return f"""Incident
 - Mixed SAP incident with multiple likely failure domains
@@ -1615,6 +1916,8 @@ Required Inputs
 {build_system_section(system_context)}
 
 {build_analysis_section(analysis_context)}
+
+{build_reasoning_sections(reasoning)}
 
 Issue Mix
 {format_list(issue_mix, "No mixed-issue breakdown was derived.")}
@@ -1738,6 +2041,301 @@ def build_system_section(system_context):
         f"Integration Guidance\n"
         f"{format_list(system_context.get('integration_guidance'), 'Validate the owning system and subsystem before changing the fix path.')}"
     )
+
+
+def build_reasoning_sections(reasoning):
+    if not reasoning:
+        return ""
+
+    return (
+        f"Advanced Diagnosis\n"
+        f"{format_list(reasoning.get('diagnosis_lines'), 'No advanced diagnosis was derived.')}\n\n"
+        f"Failure Chain\n"
+        f"{format_list(reasoning.get('failure_chain'), 'No failure chain was derived.')}\n\n"
+        f"Decision Path\n"
+        f"{format_list(reasoning.get('decision_path'), 'No decision path was derived.')}"
+    )
+
+
+def has_specific_scope(label):
+    text = str(label or "").strip().lower()
+    if not text:
+        return False
+    generic_markers = [
+        "cross-system",
+        "shared service",
+        "shared sap service",
+        "general system scope",
+        "not yet classified",
+    ]
+    return not any(marker in text for marker in generic_markers)
+
+
+def map_domain_signal_to_area(domain_name):
+    mapping = {
+        "Security": "Security",
+        "Integration": "Integration",
+        "Basis": "Basis",
+        "FI": "FI",
+        "MM/SD": "MM/SD",
+        "Fiori/Gateway": "Fiori/Gateway",
+    }
+    return mapping.get(domain_name, "")
+
+
+def derive_flexible_area(query, system_context, analysis_context=None, best_pattern=None):
+    if best_pattern:
+        return best_pattern["area"]
+
+    domain_signals = (analysis_context or {}).get("domain_signals", [])
+    for signal in domain_signals:
+        mapped = map_domain_signal_to_area(signal.get("domain"))
+        if mapped:
+            return mapped
+
+    subsystem_id = str(system_context.get("subsystem_id", "")).upper()
+    system_id = str(system_context.get("system_id", "")).upper()
+    subsystem_label = str(system_context.get("subsystem_label", "")).lower()
+    system_label = str(system_context.get("system_label", "")).lower()
+    lowered = query.lower()
+
+    if system_id == "FIORI_GATEWAY" or subsystem_id in {"LAUNCHPAD", "ODATA"}:
+        return "Fiori/Gateway"
+    if system_id == "HANA_DB" or subsystem_id in {"PERFORMANCE", "REPLICATION"}:
+        return "HANA / DB"
+    if system_id == "BW4HANA" or subsystem_id in {"DATA", "REPORTING"}:
+        return "Analytics"
+    if system_id == "MDG" or subsystem_id in {"WORKFLOW", "REPLICATION"} or "workflow" in subsystem_label:
+        return "Workflow / MDG"
+    if system_id in {"SOLMAN", "GRC"} or subsystem_id in {"CHARM", "MONITORING", "ACCESS", "FIREFIGHTER"}:
+        return "ALM / Governance"
+    if subsystem_id == "FINANCE" or any(term in lowered for term in ["invoice", "fb60", "fb08", "f110", "ob52", "company code"]):
+        return "FI"
+    if subsystem_id == "LOGISTICS" or any(term in lowered for term in ["migo", "material", "pricing", "va01", "vl02n", "delivery", "stock"]):
+        return "MM/SD"
+    if system_id in {"PI_PO", "INTEGRATION_SUITE"} or any(term in lowered for term in ["idoc", "rfc", "queue", "iflow", "api"]):
+        return "Integration"
+    if any(term in lowered for term in ["authorization", "role", "su53", "locked user", "access denied"]):
+        return "Security"
+    if any(term in lowered for term in ["sql", "expensive statement", "dbacockpit", "replication", "backup", "memory", "cpu"]):
+        return "HANA / DB"
+    if any(term in lowered for term in ["process chain", "odp", "odqmon", "bex", "analysis office", "reporting"]):
+        return "Analytics"
+    if any(term in lowered for term in ["workflow", "approval", "drflog", "change request", "firefighter", "grc", "mdg"]):
+        return "Workflow / MDG"
+    if has_specific_scope(system_label):
+        return "Cross-System"
+    return "Basis"
+
+
+def refine_area_with_scope(base_area, system_context, analysis_context=None):
+    area = base_area or "Cross-System"
+    system_id = str(system_context.get("system_id", "")).upper()
+    subsystem_id = str(system_context.get("subsystem_id", "")).upper()
+
+    if system_id == "FIORI_GATEWAY" or subsystem_id in {"LAUNCHPAD", "ODATA"}:
+        if area in {"Basis", "Integration", "Cross-System"}:
+            return "Fiori/Gateway"
+    if system_id == "HANA_DB" or subsystem_id in {"PERFORMANCE", "REPLICATION"}:
+        if area in {"Basis", "Cross-System"}:
+            return "HANA / DB"
+    if system_id == "BW4HANA" or subsystem_id in {"DATA", "REPORTING"}:
+        if area in {"Basis", "Integration", "Cross-System"}:
+            return "Analytics"
+    if system_id == "MDG" or subsystem_id in {"WORKFLOW", "REPLICATION"}:
+        if area in {"Basis", "Integration", "Cross-System"}:
+            return "Workflow / MDG"
+    if system_id in {"SOLMAN", "GRC"} or subsystem_id in {"CHARM", "MONITORING", "ACCESS", "FIREFIGHTER"}:
+        if area in {"Basis", "Integration", "Security", "Cross-System"}:
+            return "ALM / Governance"
+    if system_id in {"PI_PO", "INTEGRATION_SUITE"} and area in {"Basis", "Cross-System"}:
+        return "Integration"
+    return area
+
+
+def derive_flexible_title(system_context, area, best_pattern=None):
+    if best_pattern:
+        return best_pattern["title"]
+
+    subsystem_label = system_context.get("subsystem_label", "")
+    system_label = system_context.get("system_label", "")
+    if has_specific_scope(subsystem_label):
+        return f"{subsystem_label} issue requiring adaptive SAP triage"
+    if has_specific_scope(system_label):
+        return f"{system_label} issue requiring adaptive SAP triage"
+    if area and area != "Cross-System":
+        return f"{area} issue requiring adaptive SAP triage"
+    return "Cross-system SAP issue requiring adaptive triage"
+
+
+def derive_flexible_owners(area, system_context):
+    owners = get_area_owners(area)
+    if has_specific_scope(system_context.get("system_label")):
+        owners = extend_unique(owners, [f"Owning system support team: {system_context['system_label']}"], limit=6)
+    if has_specific_scope(system_context.get("subsystem_label")):
+        owners = extend_unique(owners, [f"Primary subsystem owner: {system_context['subsystem_label']}"], limit=6)
+    return owners[:6]
+
+
+def summarize_detected_evidence(analysis_context):
+    entities = (analysis_context or {}).get("entities", {})
+    evidence = []
+    if entities.get("http_codes"):
+        evidence.append(f"HTTP {', '.join(entities['http_codes'][:2])}")
+    if entities.get("status_codes"):
+        evidence.append(f"status {', '.join(entities['status_codes'][:2])}")
+    if entities.get("transports"):
+        evidence.append(f"transport {', '.join(entities['transports'][:2])}")
+    if entities.get("idocs"):
+        evidence.append(f"IDoc {', '.join(entities['idocs'][:2])}")
+    if entities.get("queues"):
+        evidence.append(f"queue {', '.join(entities['queues'][:2])}")
+    if entities.get("users"):
+        evidence.append(f"user {', '.join(entities['users'][:2])}")
+    if entities.get("objects"):
+        evidence.append(f"object {', '.join(entities['objects'][:2])}")
+    return evidence[:4]
+
+
+def build_adaptive_guidance(query, environment, area, system_context, analysis_context=None):
+    guidance = []
+    system_label = system_context.get("system_label", "SAP landscape")
+    subsystem_label = system_context.get("subsystem_label", "")
+    scope = system_label
+    if has_specific_scope(subsystem_label) and subsystem_label != system_label:
+        scope = f"{scope} / {subsystem_label}"
+
+    guidance.append(f"Treat this as a {scope} investigation first so fixes stay inside the owning SAP boundary.")
+    if system_context.get("subsystem_focus"):
+        guidance.append(system_context["subsystem_focus"])
+    if system_context.get("integration_guidance"):
+        guidance.append(system_context["integration_guidance"][0])
+
+    domain_signals = (analysis_context or {}).get("domain_signals", [])
+    if domain_signals:
+        top_domain = domain_signals[0]
+        guidance.append(
+            f"Current evidence points most strongly to {top_domain['domain']} because of {', '.join(top_domain['signals'][:3])}."
+        )
+
+    evidence = summarize_detected_evidence(analysis_context)
+    if evidence:
+        guidance.append(f"Keep the detected evidence together during triage: {', '.join(evidence)}.")
+
+    if environment == "PROD":
+        guidance.append("Use production-safe containment first and avoid mass reprocessing, broad role changes, or risky transports without approval.")
+    elif environment in {"QA", "TEST"}:
+        guidance.append("Retest the exact failing business flow plus one nearby happy-path scenario before sign-off.")
+    else:
+        guidance.append("Reproduce the issue with enough technical detail to isolate the first failing object, service, or document.")
+
+    return extend_unique([], guidance, limit=6)
+
+
+def build_adaptive_checks(query, query_tcodes, system_context, analysis_context=None, best_pattern=None):
+    checks = []
+    entities = (analysis_context or {}).get("entities", {})
+
+    if best_pattern:
+        checks = extend_unique(checks, best_pattern.get("checks", [])[:2], limit=7)
+
+    if query_tcodes:
+        checks.append(f"Validate the exact SAP transaction or app mentioned in the ticket: {', '.join(query_tcodes[:4])}.")
+
+    if entities.get("http_codes"):
+        checks.append("Review Gateway, ICF, and backend service errors with /IWFND/ERROR_LOG, /IWBEP/ERROR_LOG, SICF, and ST22.")
+    if entities.get("transports") or entities.get("return_codes"):
+        checks.append("Review STMS import history, sequence, activation state, and object ownership before reimporting anything.")
+    if entities.get("idocs") or entities.get("queues") or entities.get("status_codes"):
+        checks.append("Trace the failed payload in WE02, BD87, SM58, SMQ1, or SMQ2 and confirm whether the blocker is posting, master data, or connectivity.")
+    if entities.get("users"):
+        checks.append("Run SU53 or ST01 for the affected user and compare the failing step with the assigned role or technical user context.")
+    if entities.get("objects"):
+        checks.append(f"Validate the business object lifecycle and current status for {', '.join(entities['objects'][:3])}.")
+
+    if system_context.get("system_tools"):
+        checks.append(f"Start with the main tools for this stack: {', '.join(system_context['system_tools'][:5])}.")
+
+    checks.extend(
+        [
+            "Capture the exact SAP error text, timestamp, user, and business step before making corrective changes.",
+            "Identify the first technical artifact that fails: document posting, service call, queue entry, transport, workflow step, job, or SQL statement.",
+            "Confirm whether the issue is isolated to one user or object, or affects a wider batch, interface, or business population.",
+        ]
+    )
+    return extend_unique([], checks, limit=7)
+
+
+def build_adaptive_resolution(query, environment, system_context, analysis_context=None, best_pattern=None):
+    resolution = []
+    entities = (analysis_context or {}).get("entities", {})
+
+    if best_pattern:
+        resolution = extend_unique(resolution, best_pattern.get("resolution", [])[:2], limit=6)
+
+    if entities.get("transports") or entities.get("return_codes"):
+        resolution.append("Correct the missing prerequisite, sequence, or inactive object first, then reimport only the failing transport in the approved order.")
+    if entities.get("idocs") or entities.get("queues") or entities.get("status_codes"):
+        resolution.append("Fix the application, master-data, or connectivity blocker first, then reprocess only the failed IDoc, queue, or tRFC entries.")
+    if entities.get("http_codes"):
+        resolution.append("Correct the OData service, ICF activation, role, RFC trust, or backend exception before retesting the same user action in the app.")
+    if entities.get("users") and not entities.get("http_codes"):
+        resolution.append("Correct the affected user, role, or technical account issue and retest with the same user context to confirm the blocker is gone.")
+    if not resolution:
+        resolution.extend(
+            [
+                "Reproduce the exact failure and correct the smallest validated configuration, authorization, transport, or data issue that explains the first failing step.",
+                "Retest the same business step immediately after the change so you confirm the fix before touching related components.",
+            ]
+        )
+
+    resolution.append("Validate one downstream step after the primary fix so the wider SAP process still completes correctly.")
+    if environment == "PROD":
+        resolution.append("Use change controls, communications, and rollback planning for any correction that affects multiple users, postings, or integrations.")
+
+    return extend_unique([], resolution, limit=6)
+
+
+def build_adaptive_risks(query, environment, area, system_context, analysis_context=None):
+    risks = []
+    entities = (analysis_context or {}).get("entities", {})
+
+    if environment == "PROD":
+        risks.append("Production users, postings, or interfaces are affected and the fix has not been validated in a safer environment.")
+    if entities.get("transports"):
+        risks.append("The issue may require transport sequencing, object repair, or activation checks rather than a direct change in the target system.")
+    if entities.get("idocs") or entities.get("queues"):
+        risks.append("Mass reprocessing could duplicate payloads or hide the original application error if the root cause is not fixed first.")
+    if entities.get("objects") and area in {"FI", "MM", "SD", "MM/SD", "Workflow / MDG"}:
+        risks.append("Document correction, reversal, or reprocessing may have downstream financial, logistics, or workflow impact.")
+    if has_specific_scope(system_context.get("subsystem_label")):
+        risks.append(f"The owning subsystem {system_context['subsystem_label']} may need specialist support beyond first-line triage.")
+    risks.append("The incident still lacks enough evidence for a one-step fix and may require cross-team coordination.")
+    return extend_unique([], risks, limit=5)
+
+
+def build_related_playbooks(query, universal_patterns=None, best_pattern=None, preferred_area=None):
+    related = []
+    for item in universal_patterns or []:
+        pattern = item["pattern"]
+        if best_pattern and pattern["title"] == best_pattern["title"]:
+            continue
+        if item.get("score", 0) < 4:
+            continue
+        related.append(f"{pattern['title']} ({pattern['area']})")
+
+    for candidate in predict_ticket_candidates(query, top_k=4):
+        if best_pattern and candidate["title"] == best_pattern["title"]:
+            continue
+        if candidate["probability"] < 0.2:
+            continue
+        if preferred_area and preferred_area not in {"Basis", "Security", "Integration", "FI", "MM", "SD", "MM/SD"}:
+            continue
+        related.append(f"{candidate['title']} [{candidate['area']}, router {candidate['probability']:.2f}]")
+
+    if not related:
+        return []
+    return extend_unique([], related, limit=4)
 
 
 def build_analysis_section(analysis_context):
@@ -2410,11 +3008,26 @@ def enhance_answer_with_open_source(
 def build_ticket_answer(query, environment, system=None, subsystem=None, analysis_context=None, matching_query=None, scope_query=None):
     matching_query = matching_query or query
     scope_query = scope_query or query
-    matches = find_ticket_matches(matching_query, top_k=4)
-    context_snippets, context_source = build_context(matches, matching_query, include_vector=False)
     resolved_environment = resolve_environment(environment, scope_query)
     system_context = resolve_system_context(scope_query, system=system, subsystem=subsystem)
-    universal_patterns = find_universal_pattern(matching_query, top_k=4)
+    matches = rerank_matches_for_precision(
+        find_ticket_matches(matching_query, top_k=6),
+        system_context,
+        analysis_context=analysis_context,
+    )[:4]
+    universal_patterns = rerank_patterns_for_precision(
+        find_universal_pattern(matching_query, top_k=6),
+        system_context,
+        analysis_context=analysis_context,
+    )[:4]
+    context_snippets, context_source = build_context(matches, matching_query, include_vector=False)
+    reasoning = build_advanced_reasoning(
+        matching_query,
+        system_context,
+        analysis_context=analysis_context,
+        matches=matches,
+        universal_patterns=universal_patterns,
+    )
     mixed_issue_workstreams = detect_mixed_issue_workstreams(matching_query, matches, universal_patterns)
 
     if mixed_issue_workstreams:
@@ -2441,10 +3054,11 @@ def build_ticket_answer(query, environment, system=None, subsystem=None, analysi
     best_match = matches[0]
     ticket = best_match["ticket"]
     confidence = summarize_confidence(matches)
-    strong_reason_markers = ("matched error signal", "matched T-code", "exact title match")
-    has_strong_reason = any(reason.startswith(strong_reason_markers) for reason in best_match["reasons"])
+    has_strong_reason = match_has_strong_reason(best_match)
+    preferred_areas = derive_preferred_areas(system_context, analysis_context=analysis_context)
+    top_area_aligned = not preferred_areas or ticket["area"] in preferred_areas
 
-    if confidence == "Low" and not has_strong_reason:
+    if (confidence == "Low" and not has_strong_reason) or (preferred_areas and not top_area_aligned and best_match["score"] < 24):
         return build_generic_triage_answer(
             matching_query,
             context_snippets,
@@ -2456,17 +3070,24 @@ def build_ticket_answer(query, environment, system=None, subsystem=None, analysi
 
     related = [match["ticket"]["title"] for match in matches[1:] if match["score"] >= 10]
     priority = infer_priority(matching_query, resolved_environment)
-    owners = get_area_owners(ticket["area"])
+    display_area = refine_area_with_scope(ticket["area"], system_context, analysis_context=analysis_context)
+    owners = derive_flexible_owners(display_area, system_context)
     query_tcodes = sorted(extract_tcodes(matching_query))
-    best_tcodes = derive_best_tcodes(query_tcodes, ticket["tcodes"])
-    required_inputs = derive_required_inputs(matching_query, ticket["area"], best_tcodes)
+    best_tcodes = derive_best_tcodes(query_tcodes, ticket["tcodes"], system_context=system_context)
+    required_inputs = derive_required_inputs(
+        matching_query,
+        display_area,
+        best_tcodes,
+        analysis_context=analysis_context,
+        system_context=system_context,
+    )
 
     reason_lines = best_match["reasons"][:3] or ["matched the closest SAP incident pattern available"]
     context_preview = context_snippets[0] if context_snippets else "No additional note snippet was available."
 
     return f"""Incident
 - {ticket['title']}
-- Area: {ticket['area']}
+- Area: {display_area}
 - Confidence: {confidence}
 
 Likely Root Cause
@@ -2486,6 +3107,8 @@ Required Inputs
 {build_system_section(system_context)}
 
 {build_analysis_section(analysis_context)}
+
+{build_reasoning_sections(reasoning)}
 
 Best T-codes
 {format_list(best_tcodes, "No T-code available")}
@@ -2513,50 +3136,122 @@ Related Playbooks
 def build_generic_triage_answer(query, context_snippets, context_source, environment, system_context=None, analysis_context=None):
     system_context = system_context or resolve_system_context(query)
     query_tcodes = sorted(extract_tcodes(query))
-    universal_patterns = find_universal_pattern(query)
-    best_pattern = universal_patterns[0]["pattern"] if universal_patterns else None
-    pattern_reasons = universal_patterns[0]["reasons"][:3] if universal_patterns else []
-    area = best_pattern["area"] if best_pattern else "Basis"
-    title = best_pattern["title"] if best_pattern else "Unclassified SAP operational issue"
-    priority = infer_priority(query, environment)
-    owners = get_area_owners(area)
-    best_tcodes = derive_best_tcodes(query_tcodes, [], best_pattern)
-    required_inputs = derive_required_inputs(query, area, best_tcodes, pattern=best_pattern)
-    default_checks = [
-        "Capture the exact SAP error text, screenshot, and business step that failed.",
-        "Identify the affected user, client, company code, plant, and document number if applicable.",
-        "Check the most relevant technical traces such as SU53, ST22, SM21, SM13, SM37, or SM59 based on the symptom.",
-    ]
-    if best_pattern:
-        default_checks = best_pattern["checks"] + default_checks
-    if query_tcodes:
-        default_checks.insert(1, f"Validate the mentioned transaction code(s): {', '.join(query_tcodes)}.")
-
-    root_cause_lines = (
-        best_pattern["causes"]
-        if best_pattern
-        else ["The current ticket text does not strongly match a single runbook in the local SAP catalog."]
+    universal_patterns = rerank_patterns_for_precision(
+        find_universal_pattern(query, top_k=6),
+        system_context,
+        analysis_context=analysis_context,
     )
-    resolution_lines = (
-        best_pattern["resolution"]
-        if best_pattern
-        else [
-            "Start with the error log or failed transaction that reproduces the issue.",
-            "Gather the exact technical message and route the ticket to the right module after basic checks.",
-            "Add ticket details such as module, transaction, error code, and impact to improve the diagnosis.",
-        ]
+    best_pattern_item = universal_patterns[0] if universal_patterns else None
+    scoped_area = derive_flexible_area(query, system_context, analysis_context=analysis_context, best_pattern=None)
+    pattern_is_strong = bool(best_pattern_item and best_pattern_item["score"] >= 8)
+    if (
+        pattern_is_strong
+        and scoped_area
+        and best_pattern_item["pattern"]["area"] != scoped_area
+        and has_specific_scope(system_context.get("system_label"))
+        and scoped_area in {"Analytics", "HANA / DB", "Workflow / MDG", "ALM / Governance", "Fiori/Gateway"}
+        and best_pattern_item["score"] < 14
+    ):
+        pattern_is_strong = False
+    best_pattern = best_pattern_item["pattern"] if pattern_is_strong else None
+    pattern_reasons = best_pattern_item["reasons"][:3] if pattern_is_strong else []
+    area = refine_area_with_scope(
+        derive_flexible_area(query, system_context, analysis_context=analysis_context, best_pattern=best_pattern) or scoped_area,
+        system_context,
+        analysis_context=analysis_context,
+    )
+    title = derive_flexible_title(
+        system_context,
+        area,
+        best_pattern=best_pattern if not best_pattern or area == best_pattern["area"] else None,
+    )
+    priority = infer_priority(query, environment)
+    owners = derive_flexible_owners(area, system_context)
+    best_tcodes = derive_best_tcodes(query_tcodes, [], best_pattern, system_context=system_context)
+    required_inputs = derive_required_inputs(
+        query,
+        area,
+        best_tcodes,
+        pattern=best_pattern,
+        analysis_context=analysis_context,
+        system_context=system_context,
+    )
+    guidance_lines = build_adaptive_guidance(
+        query,
+        environment,
+        area,
+        system_context,
+        analysis_context=analysis_context,
+    )
+    default_checks = build_adaptive_checks(
+        query,
+        query_tcodes,
+        system_context,
+        analysis_context=analysis_context,
+        best_pattern=best_pattern,
+    )
+
+    root_cause_lines = []
+    if best_pattern:
+        root_cause_lines = list(best_pattern["causes"])
+    else:
+        root_cause_lines.append("The current ticket does not strongly match one existing SAP runbook, so adaptive triage is being used instead of forcing a narrow diagnosis.")
+        if has_specific_scope(system_context.get("system_label")):
+            root_cause_lines.append(
+                f"The issue most likely sits within {system_context['system_label']}"
+                + (
+                    f" / {system_context['subsystem_label']}"
+                    if has_specific_scope(system_context.get("subsystem_label")) and system_context.get("subsystem_label") != system_context.get("system_label")
+                    else ""
+                )
+                + "."
+            )
+        domain_signals = (analysis_context or {}).get("domain_signals", [])
+        if domain_signals:
+            top_domain = domain_signals[0]
+            root_cause_lines.append(
+                f"Top issue signal points to {top_domain['domain']} because of {', '.join(top_domain['signals'][:3])}."
+            )
+        evidence = summarize_detected_evidence(analysis_context)
+        if evidence:
+            root_cause_lines.append(f"Current evidence already includes {', '.join(evidence)}.")
+
+    resolution_lines = build_adaptive_resolution(
+        query,
+        environment,
+        system_context,
+        analysis_context=analysis_context,
+        best_pattern=best_pattern,
+    )
+    risk_lines = build_adaptive_risks(
+        query,
+        environment,
+        area,
+        system_context,
+        analysis_context=analysis_context,
     )
     escalation_lines = [
-        "The issue blocks production users or financial/logistics postings.",
-        "The ticket requires functional customizing or ABAP changes.",
+        "The issue blocks production users, critical postings, interfaces, or business approvals.",
+        "The first failing technical component cannot be isolated with the available logs and evidence.",
+        f"The identified area '{area}' needs specialist support or a controlled change path.",
     ]
-    if best_pattern:
-        escalation_lines = [
-            "The issue is affecting a broad user group, production processing, or period-end operations.",
-            f"The identified area '{area}' needs specialist support beyond first-line triage.",
-        ]
-
-    why_matched = pattern_reasons or ["used the best universal SAP support pattern available"]
+    why_matched = pattern_reasons or [
+        "adaptive fallback was used because no single SAP runbook matched strongly enough",
+        f"the owning scope was inferred as {system_context.get('system_label', 'SAP landscape')}",
+    ]
+    related_playbooks = build_related_playbooks(
+        query,
+        universal_patterns=universal_patterns,
+        best_pattern=best_pattern,
+        preferred_area=area,
+    )
+    reasoning = build_advanced_reasoning(
+        query,
+        system_context,
+        analysis_context=analysis_context,
+        matches=[],
+        universal_patterns=universal_patterns,
+    )
 
     return f"""Incident
 - {title}
@@ -2581,6 +3276,11 @@ Required Inputs
 
 {build_analysis_section(analysis_context)}
 
+{build_reasoning_sections(reasoning)}
+
+Guidance
+{format_list(guidance_lines, "Use adaptive SAP triage when the ticket does not map cleanly to one known runbook.")}
+
 Best T-codes
 {format_list(best_tcodes, "No T-code available")}
 
@@ -2590,6 +3290,9 @@ Checks
 Resolution
 {format_list(resolution_lines, "Apply the safest validated fix and retest.")}
 
+Risks / Escalation
+{format_list(risk_lines, "Use a controlled support path when the issue is still under investigation.")}
+
 Escalate If
 {format_list(escalation_lines, "Escalate when the issue affects production or cannot be reproduced safely.")}
 
@@ -2598,7 +3301,10 @@ Why This Matched
 
 Supporting Context
 - Source: {context_source}
-- Snippet: {context_snippets[0] if context_snippets else 'No supporting note snippet was available.'}"""
+- Snippet: {context_snippets[0] if context_snippets else 'No supporting note snippet was available.'}
+
+Related Playbooks
+{format_list(related_playbooks, "No close supporting playbook was identified yet.")}"""
 
 
 def ask_sap(query, environment=None, provider="auto", system=None, subsystem=None, analysis_context=None):
@@ -2677,6 +3383,12 @@ def ask_sap(query, environment=None, provider="auto", system=None, subsystem=Non
         )
 
     matches = find_ticket_matches(matching_query)
+    system_context = resolve_system_context(scope_query, system=system, subsystem=subsystem)
+    matches = rerank_matches_for_precision(
+        matches,
+        system_context,
+        analysis_context=analysis_context,
+    )
     context_snippets, context_source = build_context(
         matches,
         matching_query,

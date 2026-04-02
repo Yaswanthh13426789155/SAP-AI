@@ -60,6 +60,9 @@ KNOWN_HEADINGS = {
     "Issue Mix",
     "Parallel Workstreams",
     "Cross-Issue Risks",
+    "Advanced Diagnosis",
+    "Failure Chain",
+    "Decision Path",
     "Guidance",
     "Best T-codes",
     "Checks",
@@ -93,6 +96,9 @@ SECTION_ORDER = [
     "Issue Mix",
     "Parallel Workstreams",
     "Cross-Issue Risks",
+    "Advanced Diagnosis",
+    "Failure Chain",
+    "Decision Path",
     "Guidance",
     "Best T-codes",
     "Checks",
@@ -500,6 +506,16 @@ def render_assistant_response(message, message_key):
             f"<div>{html.escape(workspace['expected_outcome'])}</div>",
         )
 
+        if sections.get("Advanced Diagnosis"):
+            render_action_card(
+                "Advanced Diagnosis",
+                items_to_html([f"- {item}" for item in sections["Advanced Diagnosis"]]),
+            )
+        if sections.get("Decision Path"):
+            render_action_card(
+                "Decision Path",
+                items_to_html([f"- {item}" for item in sections["Decision Path"]]),
+            )
         if sections.get("Why This Matched"):
             render_action_card(
                 "Why This Match Was Chosen",
@@ -601,6 +617,10 @@ def render_sidebar(status):
         st.metric("Vector Index", "Ready" if status["vector_index_present"] else "Missing")
         st.metric("OCR", "Ready" if status["ocr_available"] else "Missing")
         st.metric("Neural NLP", "Ready" if status["neural_nlp_available"] else "Missing")
+        router_state = "Ready" if status["trained_router_ready"] else (
+            "Training" if status["training_state"] == "running" else "Missing"
+        )
+        st.metric("SAP Router", router_state)
         st.metric("Custom Landscape", "Ready" if status["custom_landscape_present"] else "Default")
 
         if status["openai_last_error"]:
@@ -611,6 +631,13 @@ def render_sidebar(status):
             st.warning(status["openai_compatible_last_error"])
         if status["hf_local_last_error"]:
             st.warning(status["hf_local_last_error"])
+        if status["training_message"]:
+            st.info(status["training_message"])
+        if status["training_best_val_accuracy"]:
+            st.caption(
+                "Router validation accuracy: "
+                f"{status['training_best_val_accuracy']:.2%} | macro F1: {status['training_best_val_macro_f1']:.2%}"
+            )
 
         with st.expander("Architecture", expanded=False):
             st.code(ARCHITECTURE_FLOW, language="text")
@@ -622,6 +649,11 @@ def render_sidebar(status):
             st.markdown("- Pick the SAP system and subsystem to route the answer to the right stack.")
             st.markdown("- Upload screenshots so OCR and NLP can extract issue signals automatically.")
             st.markdown("- Use `open_llm` for API-key-based OpenAI-compatible endpoints.")
+
+        with st.expander("Model Tuning", expanded=False):
+            st.markdown("- Run `python sap_training.py --time-budget-hours 8` to tune the SAP router.")
+            st.markdown("- The tuned router improves runbook matching for ambiguous tickets on this machine.")
+            st.markdown("- Progress is written to `.cache/sap_training/status.json`.")
 
         with st.expander("Supported Systems", expanded=False):
             for _, label in get_system_choices(include_auto=False):
@@ -676,6 +708,8 @@ with top_right:
                 <li>Vector context: <code>{"On" if status["vector_context_enabled"] else "Off"}</code></li>
                 <li>OCR pipeline: <code>{"Ready" if status["ocr_available"] else "Missing"}</code></li>
                 <li>Neural NLP: <code>{"Ready" if status["neural_nlp_available"] else "Missing"}</code></li>
+                <li>SAP router: <code>{"Ready" if status["trained_router_ready"] else status["training_state"].title()}</code></li>
+                <li>Router accuracy: <code>{status["training_best_val_accuracy"]:.2%}</code></li>
                 <li>Supported systems: <code>{status["supported_systems"]}</code></li>
                 <li>Supported subsystems: <code>{status["supported_subsystems"]}</code></li>
             </ul>

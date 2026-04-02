@@ -12,6 +12,7 @@ Streamlit app for SAP ticket triage across `DEV`, `QA`, `TEST`, and `PROD`.
 - Supports screenshot intake with image preprocessing, OCR, NLP signal extraction, and neural similarity matching
 - Suggests relevant SAP T-codes, checks, fixes, and escalation conditions
 - Supports local note matching and optional FAISS-based retrieval
+- Supports local SAP router tuning so ticket-to-runbook matching can improve over time on your own machine
 - Supports OpenAI-backed answer generation when `OPENAI_API_KEY` is configured
 - Supports multiple open-source AI backends including Ollama, Open LLM API-compatible servers, and Hugging Face local models
 - Can ingest SAP web content from official SAP domains into a local text corpus
@@ -31,6 +32,7 @@ Streamlit app for SAP ticket triage across `DEV`, `QA`, `TEST`, and `PROD`.
 - `sap_web_ingest.py`: Pull SAP web content from allowed SAP URLs into `sap_web_data.txt`
 - `sap_sources.txt`: Curated SAP internet sources used by the web ingestion script
 - `rag_sap.py`: Lightweight Ollama + FAISS CLI example
+- `sap_training.py`: Time-budgeted trainer for a lightweight SAP ticket router used to improve runbook matching
 
 ## Run Locally
 
@@ -198,10 +200,33 @@ python embed.py
 python sap_web_ingest.py
 ```
 
+## Optional 8-Hour Tuning Run
+
+This project can now tune a lightweight SAP ticket router on the local machine.
+The tuned router is used to improve runbook selection for ambiguous tickets before answer generation.
+
+Run it with an 8-hour wall-clock budget:
+
+```powershell
+python sap_training.py --time-budget-hours 8
+```
+
+Notes:
+
+- On this machine class of hardware, this tunes the local SAP router, not OpenAI or Ollama themselves.
+- The training job writes progress to `.cache/sap_training/status.json`.
+- The best checkpoint is saved under `.cache/sap_training/sap_router/`.
+- If you want to leave it running in the background on Windows:
+
+```powershell
+Start-Process python -WorkingDirectory . -ArgumentList 'sap_training.py','--time-budget-hours','8'
+```
+
 ## Notes
 
 - The app works without a FAISS index by using the local runbook catalog and `sap_tickets.txt`.
 - The app can also use `sap_dataset.txt` and `sap_web_data.txt` when those files are present.
 - The app can load a local `sap_landscape.json` file to extend the built-in SAP system and subsystem catalog for your landscape.
 - This project uses retrieval and grounded generation, not OpenAI fine-tuning. For SAP ticket support, that is safer and easier to update than retraining a model every time the source data changes.
+- The local tuning workflow improves SAP runbook routing with your local corpus and is designed for CPU-only machines.
 - For best results, paste full ticket text including the environment, error, T-code, and business impact.

@@ -33,6 +33,7 @@ Streamlit app for SAP ticket triage across `DEV`, `QA`, `TEST`, and `PROD`.
 - `sap_sources.txt`: Curated SAP internet sources used by the web ingestion script
 - `rag_sap.py`: Lightweight Ollama + FAISS CLI example
 - `sap_training.py`: Time-budgeted trainer for a lightweight SAP ticket router used to improve runbook matching
+- `packages.txt`: Linux system packages for cloud deployment, including Tesseract OCR
 
 ## Run Locally
 
@@ -172,11 +173,41 @@ Notes:
 
 This app is best hosted with Streamlit Community Cloud because it deploys directly from GitHub and runs the Python backend for you.
 
-1. Push the repo to GitHub.
-2. In Streamlit Community Cloud, create a new app from `Yaswanthh13426789155/SAP-AI`.
-3. Select branch `main` and main file path `ui.py`.
-4. In the app Secrets settings, add `OPENAI_API_KEY` and optional `OPENAI_MODEL`.
-5. Deploy to get a public `*.streamlit.app` URL.
+Deployment target:
+
+- Repo: `Yaswanthh13426789155/SAP-AI`
+- Branch: `main`
+- Main file: `ui.py`
+- Python version: `3.12`
+
+Cloud setup steps:
+
+1. Open Streamlit Community Cloud and create a new app from `Yaswanthh13426789155/SAP-AI`.
+2. Select branch `main` and main file path `ui.py`.
+3. In Advanced settings, choose Python `3.12`.
+4. Keep `packages.txt` in the repo so the cloud build installs Tesseract OCR for screenshots.
+5. In the app Secrets settings, add the keys you want to use.
+6. Deploy to get a public `*.streamlit.app` URL.
+
+Recommended cloud secrets:
+
+```toml
+OPENAI_API_KEY="your_openai_api_key_here"
+OPENAI_MODEL="gpt-4.1-mini"
+OPEN_SOURCE_BACKEND="auto"
+OPEN_LLM_API_BASE_URL=""
+OPEN_LLM_MODEL=""
+OPEN_LLM_API_KEY=""
+HF_TOKEN=""
+HF_LOCAL_MODEL=""
+ENABLE_VECTOR_CONTEXT="1"
+```
+
+Important cloud notes:
+
+- `OLLAMA_BASE_URL="http://127.0.0.1:11434"` will not work on Streamlit Community Cloud because `localhost` there is the cloud container, not your PC.
+- Use OpenAI, a publicly reachable OpenAI-compatible endpoint, or keep the built-in SAP rules mode for cloud deployment.
+- `packages.txt` installs Tesseract so OCR can work remotely on Linux without manual server setup.
 
 GitHub Pages is not a fit for this project because it is designed for static sites, while this app needs a live Python/Streamlit backend.
 

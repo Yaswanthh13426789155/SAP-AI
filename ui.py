@@ -1,5 +1,7 @@
 import html
+import json
 import os
+from datetime import datetime
 from pathlib import Path
 
 WORKSPACE_DIR = Path(__file__).resolve().parent
@@ -652,6 +654,110 @@ def build_image_evidence_items(message):
     return items[:6]
 
 
+def strip_bullet_prefix(item):
+    text = str(item or "").strip()
+    return text[2:].strip() if text.startswith("- ") else text
+
+
+def clean_section_items(items):
+    return [strip_bullet_prefix(item) for item in (items or []) if strip_bullet_prefix(item)]
+
+
+def slugify_filename(text, fallback="sap-ticket"):
+    lowered = str(text or "").strip().lower()
+    lowered = "".join(char if char.isalnum() else "-" for char in lowered)
+    while "--" in lowered:
+        lowered = lowered.replace("--", "-")
+    lowered = lowered.strip("-")
+    return lowered[:60] or fallback
+
+
+def build_incident_export_payload(message, workspace, engine_label, model_name):
+    sections = workspace.get("sections") or {}
+    export_sections = {
+        heading: clean_section_items(items)
+        for heading, items in sections.items()
+        if clean_section_items(items)
+    }
+    return {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "query": message.get("query") or message.get("content", ""),
+        "environment": message.get("environment", workspace.get("environment", "ALL")),
+        "engine": engine_label,
+        "model_runtime": model_name,
+        "system": workspace.get("primary_system") or message.get("system", ""),
+        "subsystem": workspace.get("primary_subsystem") or message.get("subsystem", ""),
+        "primary_incident": workspace.get("primary_incident", ""),
+        "primary_tcode": workspace.get("primary_tcode", ""),
+        "expected_outcome": workspace.get("expected_outcome", ""),
+        "next_actions": list(workspace.get("next_actions") or []),
+        "solve_now_plan": list(workspace.get("solve_now_plan") or []),
+        "business_update": workspace.get("business_update", ""),
+        "technical_handoff": workspace.get("technical_handoff", ""),
+        "end_user_update": workspace.get("end_user_update", ""),
+        "follow_up_prompts": list(workspace.get("follow_up_prompts") or []),
+        "image_filename": message.get("image_filename", ""),
+        "image_findings": clean_section_items(message.get("image_findings") or []),
+        "ocr_preview": clip_text(message.get("ocr_text", ""), limit=500),
+        "analysis_summary": clean_section_items(message.get("analysis_summary") or []),
+        "sections": export_sections,
+    }
+
+
+def build_incident_markdown_export(payload):
+    lines = [
+        "# SAP AI Incident Pack",
+        "",
+        f"- Generated: {payload['generated_at']}",
+        f"- Environment: {payload['environment']}",
+        f"- Engine: {payload['engine']}",
+        f"- Runtime: {payload['model_runtime']}",
+    ]
+    if payload.get("system"):
+        lines.append(f"- System: {payload['system']}")
+    if payload.get("subsystem"):
+        lines.append(f"- Subsystem: {payload['subsystem']}")
+    lines.extend(
+        [
+            "",
+            "## Ticket",
+            payload.get("query", ""),
+        ]
+    )
+
+    if payload.get("primary_incident"):
+        lines.extend(["", "## Incident", payload["primary_incident"]])
+    if payload.get("expected_outcome"):
+        lines.extend(["", "## Expected Outcome", payload["expected_outcome"]])
+    if payload.get("solve_now_plan"):
+        lines.append("")
+        lines.append("## Solve Now Plan")
+        lines.extend(f"- {item}" for item in payload["solve_now_plan"])
+    if payload.get("next_actions"):
+        lines.append("")
+        lines.append("## Next Best Actions")
+        lines.extend(f"- {item}" for item in payload["next_actions"])
+    if payload.get("image_filename") or payload.get("image_findings") or payload.get("ocr_preview"):
+        lines.append("")
+        lines.append("## Image Evidence")
+        if payload.get("image_filename"):
+            lines.append(f"- Screenshot: {payload['image_filename']}")
+        lines.extend(f"- {item}" for item in payload.get("image_findings", []))
+        if payload.get("ocr_preview"):
+            lines.append(f"- OCR preview: {payload['ocr_preview']}")
+    for heading, items in payload.get("sections", {}).items():
+        lines.append("")
+        lines.append(f"## {heading}")
+        lines.extend(f"- {item}" for item in items)
+    if payload.get("technical_handoff"):
+        lines.extend(["", "## Technical Handoff", payload["technical_handoff"]])
+    if payload.get("business_update"):
+        lines.extend(["", "## Business Update", payload["business_update"]])
+    if payload.get("end_user_update"):
+        lines.extend(["", "## End User Update", payload["end_user_update"]])
+    return "\n".join(lines).strip() + "\n"
+
+
 def summarize_message_for_context(message):
     if message["role"] == "user":
         return f"Previous user request: {message['content']}"
@@ -779,6 +885,15 @@ def render_assistant_response(message, message_key):
     sections = workspace["sections"]
     system_scope = workspace.get("primary_system") or message.get("system", "")
     subsystem_scope = workspace.get("primary_subsystem") or message.get("subsystem", "")
+    export_payload = build_incident_export_payload(message, workspace, engine_label, model_name)
+    export_markdown = build_incident_markdown_export(export_payload)
+    export_json = json.dumps(export_payload, indent=2)
+    export_handoff = workspace.get("technical_handoff", "")
+    export_basename = slugify_filename(
+        export_payload.get("primary_incident")
+        or export_payload.get("query")
+        or "sap-ticket"
+    )
     badge_html = [
         "<span class='chat-role-tag model-role'>MODEL</span>",
         f"<span class='model-badge engine-badge'>{html.escape(engine_label)}</span>",
@@ -830,8 +945,8 @@ def render_assistant_response(message, message_key):
             with col:
                 render_summary_card(title, items)
 
-    solve_tab, resolution_tab, business_tab, handoff_tab, enduser_tab, followup_tab = st.tabs(
-        ["Solve Now", "Resolution", "Business Update", "Technical Handoff", "End User", "Follow-Ups"]
+    solve_tab, resolution_tab, business_tab, handoff_tab, export_tab, enduser_tab, followup_tab = st.tabs(
+        ["Solve Now", "Resolution", "Business Update", "Technical Handoff", "Export Pack", "End User", "Follow-Ups"]
     )
 
     with solve_tab:
@@ -956,6 +1071,48 @@ def render_assistant_response(message, message_key):
     with handoff_tab:
         st.caption("Use this as an operator handoff or support note.")
         st.code(workspace["technical_handoff"], language="text")
+
+    with export_tab:
+        st.caption("Download this SAP incident as a ready-to-share package.")
+        render_action_card(
+            "Export Pack Contents",
+            items_to_html(
+                [
+                    "- Ticket query, environment, system, subsystem, and active model/runtime path",
+                    "- Solve-now plan, expected outcome, and structured section outputs",
+                    "- Technical handoff, business update, end-user update, and follow-up prompts",
+                    "- Screenshot filename, OCR preview, image findings, and integration specifications when available",
+                ]
+            ),
+        )
+        download_col_1, download_col_2, download_col_3 = st.columns(3)
+        with download_col_1:
+            st.download_button(
+                "Download Markdown",
+                export_markdown,
+                file_name=f"{export_basename}-incident-pack.md",
+                mime="text/markdown",
+                use_container_width=True,
+                key=f"download_md_{message_key}",
+            )
+        with download_col_2:
+            st.download_button(
+                "Download JSON",
+                export_json,
+                file_name=f"{export_basename}-incident-pack.json",
+                mime="application/json",
+                use_container_width=True,
+                key=f"download_json_{message_key}",
+            )
+        with download_col_3:
+            st.download_button(
+                "Download Handoff",
+                export_handoff or "No technical handoff available.",
+                file_name=f"{export_basename}-handoff.txt",
+                mime="text/plain",
+                use_container_width=True,
+                key=f"download_handoff_{message_key}",
+            )
 
     with enduser_tab:
         st.caption("Use this to update the requester in plain language.")

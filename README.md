@@ -2,6 +2,22 @@
 
 Streamlit app for SAP ticket triage across `DEV`, `QA`, `TEST`, and `PROD`.
 
+## Architecture
+
+Current local runtime:
+
+```text
+User -> UI (Streamlit) -> In-Process SAP Resolver -> Models / Tools -> Vector DB (FAISS, optional) -> SAP System
+```
+
+Target service architecture:
+
+```text
+User -> UI -> FastAPI -> ADVANCED AGENT (Multi-tool autonomous AI agent) -> LangChain -> LLM (Ollama) -> Tools (SAP API / Scripts) -> Vector DB (FAISS)
+```
+
+The current repository does not yet expose a separate FastAPI service. The Streamlit app calls the SAP resolver directly in-process today.
+
 ## Features
 
 - Resolves common SAP support tickets using a structured runbook catalog
@@ -13,6 +29,7 @@ Streamlit app for SAP ticket triage across `DEV`, `QA`, `TEST`, and `PROD`.
 - Suggests relevant SAP T-codes, checks, fixes, and escalation conditions
 - Supports local note matching and optional FAISS-based retrieval
 - Supports local SAP router tuning so ticket-to-runbook matching can improve over time on your own machine
+- Supports `ADVANCED AGENT`, a multi-tool autonomous SAP investigation layer built on top of the grounded runbook engine
 - Supports OpenAI-backed answer generation when `OPENAI_API_KEY` is configured
 - Supports multiple open-source AI backends including Ollama, Open LLM API-compatible servers, and Hugging Face local models
 - Can ingest SAP web content from official SAP domains into a local text corpus
@@ -21,6 +38,7 @@ Streamlit app for SAP ticket triage across `DEV`, `QA`, `TEST`, and `PROD`.
 
 - `ui.py`: Streamlit frontend
 - `app.py`: Core SAP AI resolver
+- `sap_agent.py`: `ADVANCED AGENT` multi-tool autonomous SAP agent flow
 - `sap_ticket_catalog.py`: Structured SAP runbook catalog
 - `sap_landscape.py`: Built-in SAP system and subsystem registry with auto-detection helpers
 - `sap_landscape.example.json`: Example override file for customer-specific SAP systems and subsystems

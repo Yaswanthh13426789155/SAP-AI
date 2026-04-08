@@ -18,18 +18,38 @@ from sap_intelligence import analyze_issue_evidence
 from sap_landscape import get_subsystem_choices, get_system_choices
 from sap_ticket_catalog import TICKET_CATALOG
 
-ARCHITECTURE_FLOW = """
+CURRENT_RUNTIME_FLOW = """
 User
   |
-Frontend (Chat UI)
+UI (Streamlit)
   |
-LLM (Ollama / OpenAI)
+In-Process SAP Resolver
   |
-Agent Layer (LangChain / CrewAI)
+Models (OpenAI / Ollama / Local)
   |
 Tools (SAP APIs, Logs, DB, Scripts)
   |
+Vector DB (FAISS, optional)
+  |
 SAP System (ECC / S4HANA)
+""".strip()
+
+TARGET_ARCHITECTURE_FLOW = """
+User
+  |
+UI
+  |
+FastAPI
+  |
+ADVANCED AGENT (Multi-tool autonomous AI agent)
+  |
+LangChain
+  |
+LLM (Ollama)
+  |
+Tools (SAP API / Scripts)
+  |
+Vector DB (FAISS)
 """.strip()
 
 SUGGESTED_PROMPTS = [
@@ -38,6 +58,17 @@ SUGGESTED_PROMPTS = [
     "TEST IDoc stuck in status 51 after master data change. Need T-codes and resolution plan.",
     "DEV sales order pricing condition missing in VA01. Help me troubleshoot step by step.",
 ]
+
+PROVIDER_LABELS = {
+    "agentic": "ADVANCED AGENT",
+    "rules": "Rules Engine",
+    "auto": "Auto",
+    "open_source": "Open Source AI",
+    "ollama": "Ollama",
+    "open_llm": "Open LLM API",
+    "hf_local": "HF Local",
+    "openai": "OpenAI",
+}
 
 KNOWN_HEADINGS = {
     "Agent Mode",
@@ -374,6 +405,10 @@ def get_recommended_provider(status):
     return "rules"
 
 
+def format_provider_label(provider):
+    return PROVIDER_LABELS.get(provider, str(provider).replace("_", " ").title())
+
+
 def summarize_message_for_context(message):
     if message["role"] == "user":
         return f"Previous user request: {message['content']}"
@@ -690,7 +725,7 @@ def render_sidebar(status):
             unsafe_allow_html=True,
         )
         st.metric("OpenAI", "Configured" if status["openai_configured"] else "Missing")
-        st.metric("Agentic", "Ready" if status["agentic_ready"] else "Missing")
+        st.metric("Advanced Agent", "Ready" if status["agentic_ready"] else "Missing")
         st.metric("Open Source", "Ready" if status["open_source_ready"] else "Missing")
         st.metric("Ollama", "Ready" if status["ollama_available"] else "Missing")
         st.metric("Open LLM API", "Ready" if status["openai_compatible_available"] else "Missing")
@@ -721,7 +756,14 @@ def render_sidebar(status):
             )
 
         with st.expander("Architecture", expanded=False):
-            st.code(ARCHITECTURE_FLOW, language="text")
+            st.caption("Current local runtime")
+            st.code(CURRENT_RUNTIME_FLOW, language="text")
+            st.caption("Target service architecture")
+            st.code(TARGET_ARCHITECTURE_FLOW, language="text")
+            st.info(
+                "The current app runs as a Streamlit UI with an in-process backend. "
+                "FastAPI is the target API boundary for external integrations and service deployment."
+            )
 
         with st.expander("Response Tips", expanded=False):
             st.markdown("- Include exact error text, dump names, or return codes.")
@@ -785,7 +827,7 @@ with top_right:
             <div class="section-title">Workspace Status</div>
             <ul>
                 <li>Open Source backends: <code>{html.escape(status["open_source_backends"])}</code></li>
-                <li>Agentic mode: <code>{"Ready" if status["agentic_ready"] else "Missing"}</code></li>
+                <li>ADVANCED AGENT: <code>{"Ready" if status["agentic_ready"] else "Missing"}</code></li>
                 <li>Preferred backend: <code>{html.escape(status["open_source_backend"])}</code></li>
                 <li>Web SAP corpus: <code>{"Ready" if status["sap_web_data_present"] else "Missing"}</code></li>
                 <li>Vector context: <code>{"On" if status["vector_context_enabled"] else "Off"}</code></li>
@@ -835,9 +877,10 @@ with controls_col:
         "Assistant engine",
         provider_options,
         index=provider_options.index(recommended_provider),
-        help="`agentic` runs an autonomous SAP investigation workflow on top of the grounded runbook engine. `rules` is still the fastest direct playbook mode.",
+        format_func=format_provider_label,
+        help="`ADVANCED AGENT` runs the multi-tool autonomous SAP investigation workflow on top of the grounded runbook engine. `Rules Engine` is still the fastest direct playbook mode.",
     )
-    st.caption(f"Recommended for this workspace: `{recommended_provider}`")
+    st.caption(f"Recommended for this workspace: `{format_provider_label(recommended_provider)}`")
 
 with prompts_col:
     st.markdown("### Suggested Prompts")

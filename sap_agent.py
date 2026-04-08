@@ -525,7 +525,7 @@ def run_sap_agent(query, environment=None, system=None, subsystem=None, analysis
     base_answer = build_ticket_answer_from_bundle(bundle)
     workspace = build_joule_workspace(clean_query, base_answer, resolved_environment, "rules")
     agent_report = f"""Agent Mode
-- Autonomous SAP troubleshooting agent
+- ADVANCED AGENT: multi-tool autonomous SAP troubleshooting agent
 - Workflow: analyze evidence -> share solver bundle -> rank hypotheses -> choose the safest next action
 - Operating model: {_derive_agent_mode_description()}
 

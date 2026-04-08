@@ -66,6 +66,7 @@ PROVIDER_LABELS = {
     "open_source": "Open Source AI",
     "ollama": "Ollama",
     "open_llm": "Open LLM API",
+    "openai_compatible": "Open LLM API",
     "hf_local": "HF Local",
     "openai": "OpenAI",
 }
@@ -251,6 +252,12 @@ PAGE_CSS = """
     padding: 1rem 1rem 1.1rem 1rem;
 }
 
+.workspace-card,
+.workspace-card ul,
+.workspace-card li {
+    color: #163a58;
+}
+
 .section-card {
     background: linear-gradient(180deg, #ffffff 0%, #f8fbfd 100%);
     border: 1px solid #d9e4ee;
@@ -274,6 +281,19 @@ PAGE_CSS = """
     border-radius: 18px;
     padding: 0.95rem 1rem;
     min-height: 160px;
+}
+
+.summary-card,
+.summary-card ul,
+.summary-card li,
+.section-card,
+.section-card ul,
+.section-card li,
+.action-card,
+.action-card ul,
+.action-card li,
+.empty-state {
+    color: #143652;
 }
 
 .summary-label {
@@ -325,6 +345,78 @@ PAGE_CSS = """
     margin-bottom: 0.45rem;
 }
 
+.assistant-badge-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+    margin-bottom: 0.65rem;
+}
+
+.chat-role-tag,
+.model-badge {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    padding: 0.35rem 0.8rem;
+    box-shadow: 0 8px 18px rgba(14, 34, 55, 0.1);
+}
+
+.user-role {
+    background: linear-gradient(135deg, #ffb703 0%, #ffd166 100%);
+    border: 1px solid #f2ac00;
+    color: #543400;
+}
+
+.model-role {
+    background: linear-gradient(135deg, #1f86c7 0%, #42b8f5 100%);
+    border: 1px solid #1684c5;
+    color: #ffffff;
+}
+
+.engine-badge {
+    background: linear-gradient(135deg, #0f5f92 0%, #35a3de 100%);
+    border: 1px solid #0f6ea8;
+    color: #ffffff;
+}
+
+.model-name-badge {
+    background: linear-gradient(135deg, #14a06f 0%, #55d6a8 100%);
+    border: 1px solid #119767;
+    color: #073322;
+}
+
+.landscape-badge {
+    background: linear-gradient(135deg, #ffb703 0%, #ffd166 100%);
+    border: 1px solid #f2ac00;
+    color: #5a3900;
+}
+
+.scope-badge {
+    background: linear-gradient(135deg, #f06c9b 0%, #ff98bc 100%);
+    border: 1px solid #eb5f90;
+    color: #4c1230;
+}
+
+.user-bubble {
+    background: linear-gradient(135deg, #fff3bf 0%, #ffe28a 100%);
+    border: 1px solid #f2c14f;
+    border-radius: 18px;
+    padding: 0.85rem 0.95rem;
+    color: #533500;
+    box-shadow: 0 14px 28px rgba(87, 58, 0, 0.08);
+}
+
+.chat-bubble-text {
+    color: inherit;
+    font-size: 0.98rem;
+    line-height: 1.55;
+    margin-top: 0.5rem;
+    white-space: normal;
+}
+
 .empty-state {
     border: 1px dashed #b8ccdc;
     border-radius: 18px;
@@ -367,6 +459,34 @@ div.stButton > button:hover {
     border-radius: 18px;
     padding: 0.2rem 0.6rem;
 }
+
+[data-testid="stChatMessage"],
+[data-testid="stChatMessage"] p,
+[data-testid="stChatMessage"] li,
+[data-testid="stChatMessage"] span,
+[data-testid="stChatMessage"] label,
+[data-testid="stChatMessageContent"],
+[data-testid="stChatMessageContent"] p,
+[data-testid="stChatMessageContent"] li,
+[data-testid="stChatMessageContent"] span,
+[data-testid="stChatMessageContent"] div {
+    color: #143652;
+}
+
+[data-baseweb="tab-list"] button {
+    color: #35556f;
+}
+
+[data-baseweb="tab-list"] button[aria-selected="true"] {
+    color: #0f4d7a;
+}
+
+[data-testid="stCodeBlock"] pre,
+[data-testid="stCodeBlock"] code,
+.stCodeBlock pre,
+.stCodeBlock code {
+    color: #143652;
+}
 </style>
 """
 
@@ -407,6 +527,47 @@ def get_recommended_provider(status):
 
 def format_provider_label(provider):
     return PROVIDER_LABELS.get(provider, str(provider).replace("_", " ").title())
+
+
+def describe_provider_runtime(provider, status_snapshot):
+    normalized = str(provider or "auto").strip().lower()
+    aliases = {
+        "advanced": "agentic",
+        "advanced agent": "agentic",
+        "advanced_agent": "agentic",
+        "agent": "agentic",
+        "autonomous": "agentic",
+        "copilot": "agentic",
+        "open_llm": "openai_compatible",
+    }
+    normalized = aliases.get(normalized, normalized)
+
+    if normalized == "auto":
+        if status_snapshot.get("openai_configured") and not status_snapshot.get("openai_last_error"):
+            normalized = "openai"
+        elif status_snapshot.get("ollama_available") and not status_snapshot.get("ollama_last_error"):
+            normalized = "ollama"
+        elif status_snapshot.get("openai_compatible_available") and not status_snapshot.get("openai_compatible_last_error"):
+            normalized = "openai_compatible"
+        elif status_snapshot.get("hf_local_available") and not status_snapshot.get("hf_local_last_error"):
+            normalized = "hf_local"
+        else:
+            normalized = "rules"
+    elif normalized == "open_source":
+        backend = str(status_snapshot.get("open_source_backend") or "").strip().lower()
+        if backend in {"ollama", "openai_compatible", "hf_local"}:
+            normalized = backend
+
+    engine_label = format_provider_label(normalized)
+    model_name = {
+        "agentic": "Grounded SAP router + autonomous tools",
+        "rules": "Grounded SAP router + runbook engine",
+        "openai": status_snapshot.get("openai_model") or "OpenAI model",
+        "ollama": status_snapshot.get("ollama_model") or "Local Ollama model",
+        "openai_compatible": status_snapshot.get("openai_compatible_model") or "Compatible API model",
+        "hf_local": status_snapshot.get("hf_local_model") or "Local HF model",
+    }.get(normalized, "Grounded SAP runtime")
+    return engine_label, model_name
 
 
 def summarize_message_for_context(message):
@@ -523,6 +684,7 @@ def render_assistant_response(message, message_key):
     content = message["content"]
     environment = message.get("environment", "ALL")
     provider = message.get("provider", "auto")
+    engine_label, model_name = describe_provider_runtime(provider, status)
     workspace = build_joule_workspace(
         message.get("query", ""),
         content,
@@ -533,17 +695,24 @@ def render_assistant_response(message, message_key):
     sections = workspace["sections"]
     system_scope = workspace.get("primary_system") or message.get("system", "")
     subsystem_scope = workspace.get("primary_subsystem") or message.get("subsystem", "")
-    meta_parts = [f"Landscape: {html.escape(environment)}"]
+    badge_html = [
+        "<span class='chat-role-tag model-role'>MODEL</span>",
+        f"<span class='model-badge engine-badge'>{html.escape(engine_label)}</span>",
+        f"<span class='model-badge model-name-badge'>{html.escape(model_name)}</span>",
+        f"<span class='model-badge landscape-badge'>Landscape: {html.escape(environment)}</span>",
+    ]
     if system_scope and system_scope not in {"AUTO", "Auto detect / cross-system"}:
-        meta_parts.append(f"System: {html.escape(system_scope)}")
+        badge_html.append(f"<span class='model-badge scope-badge'>System: {html.escape(system_scope)}</span>")
     if subsystem_scope and subsystem_scope not in {"AUTO", "Auto detect / shared service"} and subsystem_scope != system_scope:
-        meta_parts.append(f"Subsystem: {html.escape(subsystem_scope)}")
-    meta_parts.append(f"Engine: {html.escape(provider)}")
+        badge_html.append(f"<span class='model-badge scope-badge'>Subsystem: {html.escape(subsystem_scope)}</span>")
 
     st.markdown(
         f"""
+        <div class="assistant-badge-row">
+            {''.join(badge_html)}
+        </div>
         <div class="message-meta">
-            {' | '.join(meta_parts)}
+            Active engine: {html.escape(engine_label)} | Runtime path: {html.escape(model_name)}
         </div>
         """,
         unsafe_allow_html=True,
@@ -683,7 +852,16 @@ def render_assistant_response(message, message_key):
 def render_message(message, index):
     if message["role"] == "user":
         with st.chat_message("user"):
-            st.markdown(message["content"])
+            safe_content = html.escape(message["content"]).replace("\n", "<br/>")
+            st.markdown(
+                f"""
+                <div class="user-bubble">
+                    <span class="chat-role-tag user-role">USER</span>
+                    <div class="chat-bubble-text">{safe_content}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
         return
 
     with st.chat_message("assistant"):
@@ -937,6 +1115,7 @@ if submitted:
     else:
         image_bytes = issue_image.getvalue() if issue_image is not None else None
         analysis_notices = []
+        actual_provider = provider
         try:
             analysis_context = analyze_issue_evidence(
                 clean_prompt,
@@ -983,6 +1162,7 @@ if submitted:
                 analysis_notices.append(
                     f"The `{provider}` engine failed, so SAP AI returned the core SAP runbook answer instead."
                 )
+                actual_provider = "rules"
                 try:
                     response = ask_sap(
                         contextual_prompt,
@@ -1001,6 +1181,7 @@ if submitted:
                 analysis_notices.append(
                     "The selected engine returned an empty answer, so SAP AI rebuilt the response with the core runbook engine."
                 )
+                actual_provider = "rules"
                 response = ask_sap(
                     contextual_prompt,
                     environment=environment,
@@ -1018,7 +1199,7 @@ if submitted:
                 "environment": environment,
                 "system": system_labels.get(system_id, system_id),
                 "subsystem": subsystem_labels.get(subsystem_id, subsystem_id),
-                "provider": provider,
+                "provider": actual_provider,
                 "query": clean_prompt,
                 "analysis_summary": analysis_context.get("summary_lines", []),
             }

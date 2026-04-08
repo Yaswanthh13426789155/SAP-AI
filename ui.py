@@ -622,6 +622,29 @@ def describe_provider_runtime(provider, status_snapshot):
     return engine_label, model_name
 
 
+def format_workspace_open_source_label(status_snapshot):
+    backends = str(status_snapshot.get("open_source_backends") or "").strip()
+    return backends if backends and backends.lower() != "none" else "None configured"
+
+
+def format_workspace_preferred_backend(status_snapshot):
+    engine_label, _ = describe_provider_runtime(get_recommended_provider(status_snapshot), status_snapshot)
+    return engine_label
+
+
+def format_workspace_vector_label(status_snapshot):
+    if status_snapshot.get("vector_context_enabled"):
+        return "Enabled"
+    if status_snapshot.get("vector_index_present"):
+        return "Indexed (toggle off)"
+    return "Missing"
+
+
+def format_workspace_router_accuracy(status_snapshot):
+    accuracy = float(status_snapshot.get("training_best_val_accuracy") or 0.0)
+    return f"{accuracy:.2%}" if accuracy > 0 else "Built-in only"
+
+
 def message_has_image_evidence(message):
     return bool(
         message.get("image_bytes")
@@ -1242,6 +1265,14 @@ def render_sidebar(status):
             st.markdown("- The tuned router improves runbook matching for ambiguous tickets on this machine.")
             st.markdown("- Progress is written to `.cache/sap_training/status.json`.")
 
+        with st.expander("Streamlit Cloud Setup", expanded=False):
+            st.markdown("- `OPENAI_API_KEY` and `OPENAI_MODEL` enable the OpenAI backend.")
+            st.markdown("- `OPEN_LLM_API_BASE_URL`, `OPEN_LLM_MODEL`, and optional `OPEN_LLM_API_KEY` enable Open LLM API mode.")
+            st.markdown("- `OLLAMA_BASE_URL` must point to a remote reachable Ollama server. `127.0.0.1` will not work on Streamlit Cloud.")
+            st.markdown("- `HF_LOCAL_MODEL` enables HF local mode. Use a small model that fits the Streamlit Cloud runtime.")
+            st.markdown("- `ENABLE_VECTOR_CONTEXT=\"1\"` turns on the bundled FAISS vector index.")
+            st.markdown("- This repo now ships the SAP web corpus, FAISS index, and trained SAP router artifacts for deployment.")
+
         with st.expander("Supported Systems", expanded=False):
             for _, label in get_system_choices(include_auto=False):
                 st.markdown(f"- {label}")
@@ -1254,6 +1285,10 @@ st.markdown(PAGE_CSS, unsafe_allow_html=True)
 init_state()
 apply_pending_widget_updates()
 status = runtime_status()
+workspace_open_source_label = format_workspace_open_source_label(status)
+workspace_preferred_backend = format_workspace_preferred_backend(status)
+workspace_vector_label = format_workspace_vector_label(status)
+workspace_router_accuracy = format_workspace_router_accuracy(status)
 
 render_sidebar(status)
 
@@ -1290,15 +1325,15 @@ with top_right:
         <div class="workspace-card">
             <div class="section-title">Workspace Status</div>
             <ul>
-                <li>Open Source backends: <code>{html.escape(status["open_source_backends"])}</code></li>
+                <li>Open Source backends: <code>{html.escape(workspace_open_source_label)}</code></li>
                 <li>ADVANCED AGENT: <code>{"Ready" if status["agentic_ready"] else "Missing"}</code></li>
-                <li>Preferred backend: <code>{html.escape(status["open_source_backend"])}</code></li>
+                <li>Preferred backend: <code>{html.escape(workspace_preferred_backend)}</code></li>
                 <li>Web SAP corpus: <code>{"Ready" if status["sap_web_data_present"] else "Missing"}</code></li>
-                <li>Vector context: <code>{"On" if status["vector_context_enabled"] else "Off"}</code></li>
+                <li>Vector context: <code>{html.escape(workspace_vector_label)}</code></li>
                 <li>OCR pipeline: <code>{"Ready" if status["ocr_available"] else "Missing"}</code></li>
                 <li>Neural NLP: <code>{"Ready" if status["neural_nlp_available"] else "Missing"}</code></li>
                 <li>SAP router: <code>{"Ready" if status["trained_router_ready"] else status["training_state"].title()}</code></li>
-                <li>Router accuracy: <code>{status["training_best_val_accuracy"]:.2%}</code></li>
+                <li>Router accuracy: <code>{html.escape(workspace_router_accuracy)}</code></li>
                 <li>Supported systems: <code>{status["supported_systems"]}</code></li>
                 <li>Supported subsystems: <code>{status["supported_subsystems"]}</code></li>
             </ul>

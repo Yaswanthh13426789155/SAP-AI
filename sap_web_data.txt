@@ -1,0 +1,5 @@
+Source: https://help.sap.com/docs/
+SAP Help Portal | SAP Online Help
+
+Source: https://api.sap.com/
+SAP Business Accelerator Hub

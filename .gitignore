@@ -1,5 +1,7 @@
 __pycache__/
 .cache/
+!.cache/
+.cache/*
 .streamlit/
 .codex/
 sap_index/
@@ -13,3 +15,12 @@ sap_landscape.json
 .venv/
 venv/
 New Text Document.txt
+!.cache/sap_training/
+.cache/sap_training/*
+!.cache/sap_training/sap_router/
+!.cache/sap_training/sap_router/model.pt
+!.cache/sap_training/sap_router/metadata.json
+!sap_index/
+!sap_index/index.faiss
+!sap_index/index.pkl
+!sap_web_data.txt

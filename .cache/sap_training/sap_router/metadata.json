@@ -1,0 +1,22 @@
+{
+  "trained_at": "2026-04-02T07:10:57Z",
+  "best_val_accuracy": 0.9131944444444444,
+  "best_val_macro_f1": 0.927205560781906,
+  "config": {
+    "embedding_dim": 128,
+    "hidden_dim": 224,
+    "dropout": 0.25,
+    "lr": 0.0008,
+    "weight_decay": 0.0001,
+    "batch_size": 32,
+    "seed": 153
+  },
+  "examples_total": 1440,
+  "source_stats": {
+    "synthetic_examples": 1006,
+    "weak_examples_sap_tickets": 10,
+    "weak_examples_sap_dataset": 424,
+    "tickets_covered": 24,
+    "examples_total": 1440
+  }
+}

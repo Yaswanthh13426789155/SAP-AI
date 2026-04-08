@@ -417,6 +417,47 @@ PAGE_CSS = """
     white-space: normal;
 }
 
+.image-evidence-shell {
+    background: linear-gradient(180deg, #ffffff 0%, #eef8ff 100%);
+    border: 1px solid #cce4f6;
+    border-radius: 18px;
+    padding: 0.9rem 1rem;
+    margin-bottom: 0.8rem;
+    color: #113554;
+}
+
+.image-evidence-title {
+    color: #0f4d7a;
+    font-size: 0.82rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    margin-bottom: 0.45rem;
+}
+
+.image-evidence-note {
+    color: #33566f;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+.image-chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+    margin: 0.45rem 0 0.7rem 0;
+}
+
+.image-chip {
+    background: linear-gradient(135deg, #dff3ff 0%, #bfe7ff 100%);
+    border: 1px solid #9fd4f1;
+    border-radius: 999px;
+    color: #0f4d7a;
+    font-size: 0.78rem;
+    font-weight: 700;
+    padding: 0.3rem 0.72rem;
+}
+
 .empty-state {
     border: 1px dashed #b8ccdc;
     border-radius: 18px;
@@ -529,6 +570,13 @@ def format_provider_label(provider):
     return PROVIDER_LABELS.get(provider, str(provider).replace("_", " ").title())
 
 
+def clip_text(text, limit=220):
+    text = str(text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
 def describe_provider_runtime(provider, status_snapshot):
     normalized = str(provider or "auto").strip().lower()
     aliases = {
@@ -568,6 +616,38 @@ def describe_provider_runtime(provider, status_snapshot):
         "hf_local": status_snapshot.get("hf_local_model") or "Local HF model",
     }.get(normalized, "Grounded SAP runtime")
     return engine_label, model_name
+
+
+def message_has_image_evidence(message):
+    return bool(
+        message.get("image_bytes")
+        or message.get("image_findings")
+        or message.get("ocr_text")
+    )
+
+
+def build_image_evidence_items(message):
+    items = []
+    filename = str(message.get("image_filename") or "").strip()
+    if filename:
+        items.append(f"- Screenshot attached: {filename}")
+
+    for item in (message.get("image_findings") or [])[:3]:
+        content = item[2:] if str(item).startswith("- ") else str(item)
+        items.append(f"- {content}")
+
+    for item in (message.get("analysis_summary") or [])[:2]:
+        content = item[2:] if str(item).startswith("- ") else str(item)
+        if not any(content in existing for existing in items):
+            items.append(f"- {content}")
+
+    ocr_text = clip_text(message.get("ocr_text", ""), limit=240)
+    if ocr_text:
+        items.append(f"- OCR preview: {ocr_text}")
+
+    if not items:
+        items.append("- No screenshot evidence was captured.")
+    return items[:6]
 
 
 def summarize_message_for_context(message):
@@ -685,6 +765,8 @@ def render_assistant_response(message, message_key):
     environment = message.get("environment", "ALL")
     provider = message.get("provider", "auto")
     engine_label, model_name = describe_provider_runtime(provider, status)
+    has_image_evidence = message_has_image_evidence(message)
+    image_evidence_items = build_image_evidence_items(message) if has_image_evidence else []
     workspace = build_joule_workspace(
         message.get("query", ""),
         content,
@@ -705,6 +787,8 @@ def render_assistant_response(message, message_key):
         badge_html.append(f"<span class='model-badge scope-badge'>System: {html.escape(system_scope)}</span>")
     if subsystem_scope and subsystem_scope not in {"AUTO", "Auto detect / shared service"} and subsystem_scope != system_scope:
         badge_html.append(f"<span class='model-badge scope-badge'>Subsystem: {html.escape(subsystem_scope)}</span>")
+    if has_image_evidence:
+        badge_html.append("<span class='model-badge engine-badge'>Image-Based Output</span>")
 
     st.markdown(
         f"""
@@ -749,6 +833,38 @@ def render_assistant_response(message, message_key):
     )
 
     with solve_tab:
+        if has_image_evidence:
+            st.markdown(
+                f"""
+                <div class="image-evidence-shell">
+                    <div class="image-evidence-title">Image-Based Ticket Help</div>
+                    <div class="image-evidence-note">
+                        Screenshot evidence is being used to accelerate ticket diagnosis. Review the preview, OCR extract,
+                        and detected SAP signals before changing configuration.
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            preview_col, insight_col = st.columns([1.05, 1])
+            with preview_col:
+                if message.get("image_bytes"):
+                    st.image(
+                        message["image_bytes"],
+                        caption=message.get("image_filename") or "Attached SAP screenshot",
+                        use_container_width=True,
+                    )
+            with insight_col:
+                chips = []
+                if message.get("image_filename"):
+                    chips.append(f"<span class='image-chip'>{html.escape(message['image_filename'])}</span>")
+                if message.get("ocr_text"):
+                    chips.append("<span class='image-chip'>OCR Extracted</span>")
+                if message.get("image_findings"):
+                    chips.append("<span class='image-chip'>Image Findings Ready</span>")
+                if chips:
+                    st.markdown(f"<div class='image-chip-row'>{''.join(chips)}</div>", unsafe_allow_html=True)
+                render_action_card("Image-Based Ticket View", items_to_html(image_evidence_items))
         if sections.get("Expert Assessment"):
             render_action_card(
                 "Expert Assessment",
@@ -862,6 +978,12 @@ def render_message(message, index):
                 """,
                 unsafe_allow_html=True,
             )
+            if message.get("image_bytes"):
+                st.image(
+                    message["image_bytes"],
+                    caption=message.get("image_filename") or "Attached SAP screenshot",
+                    use_container_width=True,
+                )
         return
 
     with st.chat_message("assistant"):
@@ -1146,6 +1268,8 @@ if submitted:
             {
                 "role": "user",
                 "content": clean_prompt,
+                "image_bytes": image_bytes,
+                "image_filename": getattr(issue_image, "name", None) if issue_image is not None else None,
             }
         )
         with st.spinner("Building SAP ticket playbook..."):
@@ -1202,6 +1326,10 @@ if submitted:
                 "provider": actual_provider,
                 "query": clean_prompt,
                 "analysis_summary": analysis_context.get("summary_lines", []),
+                "image_bytes": image_bytes,
+                "image_filename": getattr(issue_image, "name", None) if issue_image is not None else None,
+                "image_findings": analysis_context.get("image_findings", []),
+                "ocr_text": analysis_context.get("ocr_text", ""),
             }
         )
         st.session_state["clear_composer_on_rerun"] = True

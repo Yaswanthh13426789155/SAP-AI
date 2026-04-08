@@ -172,6 +172,7 @@ RUNBOOK_HEADINGS = {
     "System Context",
     "Integration Points",
     "Integration Guidance",
+    "Integration Specifications",
     "NLP Signals",
     "Neural Matches",
     "Image Findings",
@@ -200,6 +201,8 @@ RUNBOOK_HEADING_ALIASES = {
     "System Scope": "System",
     "Subsystem Scope": "Subsystem",
     "Integration Targets": "Integration Points",
+    "Interface Specifications": "Integration Specifications",
+    "Integration Specs": "Integration Specifications",
     "OCR Findings": "Image Findings",
     "Workstreams": "Parallel Workstreams",
     "Cross-System Risks": "Cross-Issue Risks",
@@ -2055,7 +2058,9 @@ def build_system_section(system_context):
         f"Integration Points\n"
         f"{format_list(system_context.get('integration_points'), 'No specific integration point was identified yet.')}\n\n"
         f"Integration Guidance\n"
-        f"{format_list(system_context.get('integration_guidance'), 'Validate the owning system and subsystem before changing the fix path.')}"
+        f"{format_list(system_context.get('integration_guidance'), 'Validate the owning system and subsystem before changing the fix path.')}\n\n"
+        f"Integration Specifications\n"
+        f"{format_list(system_context.get('integration_specs'), 'No detailed integration specification was derived for this SAP scope yet.')}"
     )
 
 

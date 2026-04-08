@@ -27,6 +27,7 @@ The current repository does not yet expose a separate FastAPI service. The Strea
 - Detects mixed tickets that combine multiple SAP issues and splits them into parallel workstreams
 - Supports screenshot intake with image preprocessing, OCR, NLP signal extraction, and neural similarity matching
 - Suggests relevant SAP T-codes, checks, fixes, and escalation conditions
+- Includes SAP integration specifications for RFC, BAPI, IDoc, qRFC/tRFC, OData, SOAP, REST/API, PI/PO, and Integration Suite scopes
 - Supports local note matching and optional FAISS-based retrieval
 - Supports local SAP router tuning so ticket-to-runbook matching can improve over time on your own machine
 - Supports `ADVANCED AGENT`, a multi-tool autonomous SAP investigation layer built on top of the grounded runbook engine

@@ -27,7 +27,55 @@ DEFAULT_SYSTEM_CONTEXT = {
         "Map the incident to the owning SAP product before retesting or reprocessing.",
         "Document the upstream source, downstream target, and technical connector involved.",
     ],
+    "integration_specs": [
+        "Connector baseline: confirm the source system, target system, client, business object, and technical owner before changing retries or reprocessing.",
+        "Security baseline: validate destination credentials, trusted-system setup, certificates, OAuth tokens, or API keys before changing payload logic.",
+    ],
     "matched_terms": [],
+}
+
+INTEGRATION_SPEC_LIBRARY = {
+    "LANDSCAPE": [
+        "Connector baseline: confirm the source system, target system, client, business object, and technical owner before changing retries or reprocessing.",
+        "Security baseline: validate destination credentials, trusted-system setup, certificates, OAuth tokens, or API keys before changing payload logic.",
+    ],
+    "RFC": [
+        "RFC/BAPI: verify SM59 destination, target client and system number, gateway host/service, Unicode or SNC settings, and trusted-RFC or logon credentials.",
+        "RFC monitoring: use SM59, SMGW, SM58, ST22, and traces on both caller and target systems before retrying.",
+    ],
+    "QUEUES": [
+        "qRFC/tRFC/bgRFC: capture queue name, LUW key, SYSFAIL text, and retry state before replaying work.",
+        "Queue control: review SMQ1, SMQ2, SM58, and upstream application errors so reprocessing does not duplicate payloads.",
+    ],
+    "IDOC": [
+        "IDoc/ALE: validate WE20 partner profile, WE21 port, BD64 distribution model, message type/basic type, and logical-system mapping.",
+        "IDoc recovery: review WE02/WE05/BD87 status flow and reprocess only the failed payload after the posting error is fixed.",
+    ],
+    "ODATA": [
+        "OData/Gateway: verify /IWFND/MAINT_SERVICE registration, system alias, SICF activation, metadata, backend RFC destination, and service user authorization.",
+        "Gateway monitoring: use /IWFND/ERROR_LOG, /IWBEP/ERROR_LOG, ST22, SU53, and browser traces for the same failing user action.",
+    ],
+    "API": [
+        "API/REST: confirm endpoint URL, method, payload schema, OAuth or API-key policy, timeout, rate limits, and correlation/message IDs.",
+        "API troubleshooting: compare proxy logs, backend HTTP response, token validity, and caller headers before changing the consuming app.",
+    ],
+    "SOAP": [
+        "SOAP/XI: validate WSDL or service contract version, endpoint URL, certificate or trust chain, SOAP action, and runtime credentials.",
+    ],
+    "PI_PO": [
+        "PI/PO: check sender and receiver channels, adapter credentials, certificates, ESR mapping objects, and communication channel status.",
+        "PI/PO monitoring: use SXMB_MONI, NWA, adapter engine logs, SMQ1/SMQ2, and payload trace to isolate adapter, mapping, or application failure.",
+    ],
+    "CPI": [
+        "Integration Suite/CPI: confirm iFlow artifact version, runtime configuration, security material, endpoint URL, and adapter connectivity.",
+        "CPI monitoring: use message monitoring, trace mode, MPL IDs, API analytics, and backend response logs before redeploying.",
+    ],
+    "JOBS": [
+        "Background interfaces: capture job name/count, variant, event trigger, batch user, and downstream connector or file/API handoff before rerunning.",
+    ],
+    "DB": [
+        "Database connectivity: confirm replication or secondary target, consumer connection owner, and backup or recovery dependencies before restart actions.",
+    ],
 }
 
 DEFAULT_SAP_LANDSCAPE = {
@@ -324,6 +372,55 @@ def _unique_list(items):
     return unique
 
 
+def _derive_integration_specifications(system_id, subsystem_id, system_profile, subsystem_profile):
+    use_system_wide_connectors = subsystem_id in {"", "AUTO"}
+    catalog = []
+    for item in [
+        system_id,
+        subsystem_id,
+        system_profile.get("label", ""),
+        system_profile.get("type", ""),
+        subsystem_profile.get("label", ""),
+        subsystem_profile.get("focus", ""),
+    ]:
+        catalog.append(str(item or ""))
+    catalog.extend(system_profile.get("aliases", []))
+    catalog.extend(subsystem_profile.get("aliases", []))
+    if use_system_wide_connectors:
+        catalog.extend(system_profile.get("integration_points", []))
+        catalog.extend(system_profile.get("monitoring_tools", []))
+    catalog.extend(subsystem_profile.get("integration_points", []))
+    joined = " ".join(catalog).lower()
+    tokens = set(_tokenize(joined))
+
+    spec_keys = ["LANDSCAPE"]
+    if tokens.intersection({"rfc", "bapi", "sm59"}) or system_id in {"ECC", "BW4HANA"}:
+        spec_keys.append("RFC")
+    if tokens.intersection({"qrfc", "trfc", "bgfrc", "queue", "queues", "smq1", "smq2", "sm58"}):
+        spec_keys.append("QUEUES")
+    if tokens.intersection({"idoc", "idocs", "ale", "we02", "we05", "we20", "bd87", "bd64"}):
+        spec_keys.append("IDOC")
+    if tokens.intersection({"odata", "gateway", "sicf"}) or any(term in joined for term in ["/iwfnd", "/iwbep", "system alias"]) or system_id == "FIORI_GATEWAY":
+        spec_keys.append("ODATA")
+    if tokens.intersection({"api", "apis", "rest", "oauth", "proxy", "token"}) or any(term in joined for term in ["api key", "rate limit"]) or subsystem_id == "API":
+        spec_keys.append("API")
+    if tokens.intersection({"soap", "wsdl"}):
+        spec_keys.append("SOAP")
+    if system_id == "PI_PO" or tokens.intersection({"sxmb", "channel", "channels", "mapping", "aex", "nwa"}) or "adapter engine" in joined:
+        spec_keys.append("PI_PO")
+    if system_id == "INTEGRATION_SUITE" or tokens.intersection({"iflow", "iflows", "cpi", "mpl"}) or any(term in joined for term in ["integration suite", "message monitoring"]):
+        spec_keys.append("CPI")
+    if tokens.intersection({"job", "jobs", "batch", "sm37"}):
+        spec_keys.append("JOBS")
+    if system_id == "HANA_DB" or tokens.intersection({"database", "replication", "jdbc", "odbc", "dbacockpit"}):
+        spec_keys.append("DB")
+
+    specs = []
+    for key in _unique_list(spec_keys):
+        specs.extend(INTEGRATION_SPEC_LIBRARY.get(key, []))
+    return _unique_list(specs)[:8]
+
+
 @lru_cache(maxsize=1)
 def get_sap_landscape():
     landscape = deepcopy(DEFAULT_SAP_LANDSCAPE)
@@ -437,5 +534,12 @@ def resolve_system_context(query, system=None, subsystem=None):
             system_profile.get("guidance", []) + subsystem_profile.get("guidance", [])
         )
         or deepcopy(DEFAULT_SYSTEM_CONTEXT["integration_guidance"]),
+        "integration_specs": _derive_integration_specifications(
+            best_system_id,
+            best_subsystem_id or "AUTO",
+            system_profile,
+            subsystem_profile,
+        )
+        or deepcopy(DEFAULT_SYSTEM_CONTEXT["integration_specs"]),
         "matched_terms": _unique_list(best_system_reasons + best_subsystem_reasons),
     }

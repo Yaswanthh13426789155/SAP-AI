@@ -101,6 +101,7 @@ KNOWN_HEADINGS = {
     "System Context",
     "Integration Points",
     "Integration Guidance",
+    "Integration Specifications",
     "NLP Signals",
     "Neural Matches",
     "Image Findings",
@@ -152,6 +153,7 @@ SECTION_ORDER = [
     "System Context",
     "Integration Points",
     "Integration Guidance",
+    "Integration Specifications",
     "NLP Signals",
     "Neural Matches",
     "Image Findings",
@@ -879,6 +881,11 @@ def render_assistant_response(message, message_key):
             render_action_card(
                 "Layer Coordination",
                 items_to_html([f"- {item}" for item in sections["Layer Coordination"]]),
+            )
+        if sections.get("Integration Specifications"):
+            render_action_card(
+                "Integration Specifications",
+                items_to_html([f"- {item}" for item in sections["Integration Specifications"]]),
             )
         if sections.get("Investigation Plan"):
             render_action_card(

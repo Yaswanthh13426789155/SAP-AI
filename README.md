@@ -41,6 +41,12 @@ Streamlit app for SAP ticket triage across `DEV`, `QA`, `TEST`, and `PROD`.
 python -m streamlit run ui.py --browser.gatherUsageStats false
 ```
 
+Or on Windows PowerShell:
+
+```powershell
+.\run_app.ps1
+```
+
 Open `http://127.0.0.1:8501`.
 
 ## OpenAI Setup

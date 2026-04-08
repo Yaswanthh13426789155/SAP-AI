@@ -40,6 +40,21 @@ SUGGESTED_PROMPTS = [
 ]
 
 KNOWN_HEADINGS = {
+    "Agent Mode",
+    "Objective",
+    "Investigation Plan",
+    "Expert Assessment",
+    "Failure Boundary",
+    "Dependency Map",
+    "Tool Findings",
+    "Layer Coordination",
+    "Evidence Correlation",
+    "Hypothesis Ranking",
+    "Autonomous Next Step",
+    "Validation Gate",
+    "Safe Change Plan",
+    "Specialist Handoff",
+    "Open Questions",
     "Incident",
     "Likely Root Cause",
     "Priority",
@@ -76,6 +91,21 @@ KNOWN_HEADINGS = {
 }
 
 SECTION_ORDER = [
+    "Agent Mode",
+    "Objective",
+    "Investigation Plan",
+    "Expert Assessment",
+    "Failure Boundary",
+    "Dependency Map",
+    "Tool Findings",
+    "Layer Coordination",
+    "Evidence Correlation",
+    "Hypothesis Ranking",
+    "Autonomous Next Step",
+    "Validation Gate",
+    "Safe Change Plan",
+    "Specialist Handoff",
+    "Open Questions",
     "Incident",
     "Likely Root Cause",
     "Priority",
@@ -331,6 +361,8 @@ def clear_conversation():
 
 
 def get_recommended_provider(status):
+    if status.get("agentic_ready") and status.get("trained_router_ready"):
+        return "agentic"
     if status.get("trained_router_ready"):
         return "rules"
     if status.get("openai_configured") and not status.get("openai_last_error"):
@@ -513,6 +545,31 @@ def render_assistant_response(message, message_key):
     )
 
     with solve_tab:
+        if sections.get("Expert Assessment"):
+            render_action_card(
+                "Expert Assessment",
+                items_to_html([f"- {item}" for item in sections["Expert Assessment"]]),
+            )
+        if sections.get("Validation Gate"):
+            render_action_card(
+                "Validation Gate",
+                items_to_html([f"- {item}" for item in sections["Validation Gate"]]),
+            )
+        if sections.get("Layer Coordination"):
+            render_action_card(
+                "Layer Coordination",
+                items_to_html([f"- {item}" for item in sections["Layer Coordination"]]),
+            )
+        if sections.get("Investigation Plan"):
+            render_action_card(
+                "Investigation Plan",
+                items_to_html([f"- {item}" for item in sections["Investigation Plan"]]),
+            )
+        if sections.get("Autonomous Next Step"):
+            render_action_card(
+                "Autonomous Next Step",
+                items_to_html([f"- {item}" for item in sections["Autonomous Next Step"]]),
+            )
         if workspace["solve_now_plan"]:
             for step_index, action in enumerate(workspace["solve_now_plan"], start=1):
                 render_action_card(f"Step {step_index}", f"<div>{html.escape(action)}</div>")
@@ -533,6 +590,11 @@ def render_assistant_response(message, message_key):
             render_action_card(
                 "Decision Path",
                 items_to_html([f"- {item}" for item in sections["Decision Path"]]),
+            )
+        if sections.get("Safe Change Plan"):
+            render_action_card(
+                "Safe Change Plan",
+                items_to_html([f"- {item}" for item in sections["Safe Change Plan"]]),
             )
         if sections.get("Why This Matched"):
             render_action_card(
@@ -628,6 +690,7 @@ def render_sidebar(status):
             unsafe_allow_html=True,
         )
         st.metric("OpenAI", "Configured" if status["openai_configured"] else "Missing")
+        st.metric("Agentic", "Ready" if status["agentic_ready"] else "Missing")
         st.metric("Open Source", "Ready" if status["open_source_ready"] else "Missing")
         st.metric("Ollama", "Ready" if status["ollama_available"] else "Missing")
         st.metric("Open LLM API", "Ready" if status["openai_compatible_available"] else "Missing")
@@ -722,6 +785,7 @@ with top_right:
             <div class="section-title">Workspace Status</div>
             <ul>
                 <li>Open Source backends: <code>{html.escape(status["open_source_backends"])}</code></li>
+                <li>Agentic mode: <code>{"Ready" if status["agentic_ready"] else "Missing"}</code></li>
                 <li>Preferred backend: <code>{html.escape(status["open_source_backend"])}</code></li>
                 <li>Web SAP corpus: <code>{"Ready" if status["sap_web_data_present"] else "Missing"}</code></li>
                 <li>Vector context: <code>{"On" if status["vector_context_enabled"] else "Off"}</code></li>
@@ -739,7 +803,7 @@ with top_right:
 
 controls_col, prompts_col = st.columns([1.1, 1])
 with controls_col:
-    provider_options = ["auto", "open_source", "ollama", "open_llm", "hf_local", "openai", "rules"]
+    provider_options = ["agentic", "rules", "auto", "open_source", "ollama", "open_llm", "hf_local", "openai"]
     recommended_provider = get_recommended_provider(status)
     system_options = get_system_choices()
     system_ids = [option[0] for option in system_options]
@@ -771,7 +835,7 @@ with controls_col:
         "Assistant engine",
         provider_options,
         index=provider_options.index(recommended_provider),
-        help="`rules` is the fastest and most reliable SAP playbook engine here. Use the other engines when you want an LLM rewrite on top of the core runbook answer.",
+        help="`agentic` runs an autonomous SAP investigation workflow on top of the grounded runbook engine. `rules` is still the fastest direct playbook mode.",
     )
     st.caption(f"Recommended for this workspace: `{recommended_provider}`")
 

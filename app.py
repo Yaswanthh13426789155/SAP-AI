@@ -143,6 +143,21 @@ ENVIRONMENT_PROFILES = {
     },
 }
 RUNBOOK_HEADINGS = {
+    "Agent Mode",
+    "Objective",
+    "Investigation Plan",
+    "Expert Assessment",
+    "Failure Boundary",
+    "Dependency Map",
+    "Tool Findings",
+    "Layer Coordination",
+    "Evidence Correlation",
+    "Hypothesis Ranking",
+    "Autonomous Next Step",
+    "Validation Gate",
+    "Safe Change Plan",
+    "Specialist Handoff",
+    "Open Questions",
     "Incident",
     "Likely Root Cause",
     "Priority",
@@ -648,6 +663,7 @@ def runtime_status():
     open_source_backends = get_available_open_source_backends()
     training_status = load_training_status()
     return {
+        "agentic_ready": True,
         "openai_configured": openai_is_configured(),
         "openai_model": get_openai_model(),
         "openai_last_error": get_openai_failure_notice(),
@@ -3005,7 +3021,7 @@ def enhance_answer_with_open_source(
     return base_answer
 
 
-def build_ticket_answer(query, environment, system=None, subsystem=None, analysis_context=None, matching_query=None, scope_query=None):
+def build_solver_bundle(query, environment, system=None, subsystem=None, analysis_context=None, matching_query=None, scope_query=None):
     matching_query = matching_query or query
     scope_query = scope_query or query
     resolved_environment = resolve_environment(environment, scope_query)
@@ -3030,6 +3046,34 @@ def build_ticket_answer(query, environment, system=None, subsystem=None, analysi
     )
     mixed_issue_workstreams = detect_mixed_issue_workstreams(matching_query, matches, universal_patterns)
 
+    return {
+        "query": query,
+        "matching_query": matching_query,
+        "scope_query": scope_query,
+        "resolved_environment": resolved_environment,
+        "system_context": system_context,
+        "analysis_context": analysis_context,
+        "matches": matches,
+        "universal_patterns": universal_patterns,
+        "context_snippets": context_snippets,
+        "context_source": context_source,
+        "reasoning": reasoning,
+        "mixed_issue_workstreams": mixed_issue_workstreams,
+    }
+
+
+def build_ticket_answer_from_bundle(bundle):
+    matching_query = bundle["matching_query"]
+    resolved_environment = bundle["resolved_environment"]
+    system_context = bundle["system_context"]
+    analysis_context = bundle.get("analysis_context")
+    matches = bundle["matches"]
+    universal_patterns = bundle["universal_patterns"]
+    context_snippets = bundle["context_snippets"]
+    context_source = bundle["context_source"]
+    reasoning = bundle["reasoning"]
+    mixed_issue_workstreams = bundle["mixed_issue_workstreams"]
+
     if mixed_issue_workstreams:
         return build_mixed_issue_answer(
             matching_query,
@@ -3049,6 +3093,7 @@ def build_ticket_answer(query, environment, system=None, subsystem=None, analysi
             resolved_environment,
             system_context=system_context,
             analysis_context=analysis_context,
+            universal_patterns=universal_patterns,
         )
 
     best_match = matches[0]
@@ -3066,6 +3111,7 @@ def build_ticket_answer(query, environment, system=None, subsystem=None, analysi
             resolved_environment,
             system_context=system_context,
             analysis_context=analysis_context,
+            universal_patterns=universal_patterns,
         )
 
     related = [match["ticket"]["title"] for match in matches[1:] if match["score"] >= 10]
@@ -3133,10 +3179,23 @@ Related Playbooks
 {format_list(related, "No close secondary match found.")}"""
 
 
-def build_generic_triage_answer(query, context_snippets, context_source, environment, system_context=None, analysis_context=None):
+def build_ticket_answer(query, environment, system=None, subsystem=None, analysis_context=None, matching_query=None, scope_query=None):
+    bundle = build_solver_bundle(
+        query,
+        environment,
+        system=system,
+        subsystem=subsystem,
+        analysis_context=analysis_context,
+        matching_query=matching_query,
+        scope_query=scope_query,
+    )
+    return build_ticket_answer_from_bundle(bundle)
+
+
+def build_generic_triage_answer(query, context_snippets, context_source, environment, system_context=None, analysis_context=None, universal_patterns=None):
     system_context = system_context or resolve_system_context(query)
     query_tcodes = sorted(extract_tcodes(query))
-    universal_patterns = rerank_patterns_for_precision(
+    universal_patterns = universal_patterns if universal_patterns is not None else rerank_patterns_for_precision(
         find_universal_pattern(query, top_k=6),
         system_context,
         analysis_context=analysis_context,
@@ -3314,6 +3373,9 @@ def ask_sap(query, environment=None, provider="auto", system=None, subsystem=Non
 
     provider = str(provider or "auto").strip().lower()
     provider_aliases = {
+        "agent": "agentic",
+        "autonomous": "agentic",
+        "copilot": "agentic",
         "oss": "open_source",
         "open_llm": "openai_compatible",
         "open_source_api": "openai_compatible",
@@ -3323,21 +3385,31 @@ def ask_sap(query, environment=None, provider="auto", system=None, subsystem=Non
     }
     provider = provider_aliases.get(provider, provider)
 
-    matching_query = build_matching_query(clean_query, analysis_context)
-    scope_query = clean_query
-    if analysis_context and analysis_context.get("ocr_text"):
-        scope_query = f"{clean_query}\n{shorten_text(analysis_context.get('ocr_text', ''), limit=500)}"
+    if provider == "agentic":
+        from sap_agent import run_sap_agent
 
-    resolved_environment = resolve_environment(environment, scope_query)
-    base_answer = build_ticket_answer(
+        return sanitize_output_text(
+            run_sap_agent(
+                clean_query,
+                environment=environment,
+                system=system,
+                subsystem=subsystem,
+                analysis_context=analysis_context,
+            )
+        )
+
+    bundle = build_solver_bundle(
         clean_query,
-        resolved_environment,
+        environment,
         system=system,
         subsystem=subsystem,
         analysis_context=analysis_context,
-        matching_query=matching_query,
-        scope_query=scope_query,
     )
+    matching_query = bundle["matching_query"]
+    resolved_environment = bundle["resolved_environment"]
+    context_snippets = bundle["context_snippets"]
+    context_source = bundle["context_source"]
+    base_answer = build_ticket_answer_from_bundle(bundle)
 
     if provider == "rules":
         return sanitize_output_text(base_answer)
@@ -3382,18 +3454,15 @@ def ask_sap(query, environment=None, provider="auto", system=None, subsystem=Non
             )
         )
 
-    matches = find_ticket_matches(matching_query)
-    system_context = resolve_system_context(scope_query, system=system, subsystem=subsystem)
-    matches = rerank_matches_for_precision(
-        matches,
-        system_context,
-        analysis_context=analysis_context,
-    )
-    context_snippets, context_source = build_context(
-        matches,
-        matching_query,
-        include_vector=is_vector_context_enabled(),
-    )
+    if is_vector_context_enabled():
+        vector_context_snippets, vector_context_source = build_context(
+            bundle["matches"],
+            matching_query,
+            include_vector=True,
+        )
+        if vector_context_snippets:
+            context_snippets = vector_context_snippets
+            context_source = vector_context_source
 
     if provider == "openai" and openai_is_configured():
         return sanitize_output_text(

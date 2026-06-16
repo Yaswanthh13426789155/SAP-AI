@@ -113,6 +113,9 @@ KNOWN_HEADINGS = {
     "Advanced Diagnosis",
     "Failure Chain",
     "Decision Path",
+    "Solve Process",
+    "Verification Plan",
+    "Live Data Usage",
     "Guidance",
     "Best T-codes",
     "Checks",
@@ -1020,6 +1023,21 @@ def render_assistant_response(message, message_key):
                 "Layer Coordination",
                 items_to_html([f"- {item}" for item in sections["Layer Coordination"]]),
             )
+        if sections.get("Solve Process"):
+            render_action_card(
+                "Solve Process",
+                items_to_html([f"- {item}" for item in sections["Solve Process"]]),
+            )
+        if sections.get("Verification Plan"):
+            render_action_card(
+                "Verification Plan",
+                items_to_html([f"- {item}" for item in sections["Verification Plan"]]),
+            )
+        if sections.get("Live Data Usage"):
+            render_action_card(
+                "Live Data Usage",
+                items_to_html([f"- {item}" for item in sections["Live Data Usage"]]),
+            )
         if sections.get("Integration Specifications"):
             render_action_card(
                 "Integration Specifications",
@@ -1102,9 +1120,9 @@ def render_assistant_response(message, message_key):
             items_to_html(
                 [
                     "- Ticket query, environment, system, subsystem, and active model/runtime path",
-                    "- Solve-now plan, expected outcome, and structured section outputs",
+                    "- Solve-now plan, detailed solve process, verification plan, and structured section outputs",
                     "- Technical handoff, business update, end-user update, and follow-up prompts",
-                    "- Screenshot filename, OCR preview, image findings, and integration specifications when available",
+                    "- Screenshot filename, OCR preview, image findings, integration specifications, and live data usage when available",
                 ]
             ),
         )

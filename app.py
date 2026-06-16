@@ -1,4 +1,5 @@
 from collections import Counter
+from datetime import datetime
 from functools import lru_cache
 from importlib.util import find_spec
 import os
@@ -182,6 +183,9 @@ RUNBOOK_HEADINGS = {
     "Advanced Diagnosis",
     "Failure Chain",
     "Decision Path",
+    "Solve Process",
+    "Verification Plan",
+    "Live Data Usage",
     "Guidance",
     "Best T-codes",
     "Checks",
@@ -208,6 +212,9 @@ RUNBOOK_HEADING_ALIASES = {
     "Cross-System Risks": "Cross-Issue Risks",
     "Reasoning": "Advanced Diagnosis",
     "Diagnostic Path": "Decision Path",
+    "Process Explanation": "Solve Process",
+    "Validation Plan": "Verification Plan",
+    "Live Data": "Live Data Usage",
 }
 AREA_OWNERS = {
     "Basis": [
@@ -825,8 +832,10 @@ def first_section_item(sections, section_name):
 def build_next_best_actions(sections):
     actions = []
     for section_name, limit in [
+        ("Solve Process", 2),
         ("Checks", 2),
         ("Resolution", 2),
+        ("Verification Plan", 1),
         ("Escalate If", 1),
     ]:
         for item in (sections.get(section_name) or [])[:limit]:
@@ -838,10 +847,10 @@ def build_next_best_actions(sections):
 def build_solve_now_plan(sections, environment):
     steps = []
     incident = join_section_items(sections.get("Incident"), limit=1) or "the SAP incident"
-    reasoning_step = first_section_item(sections, "Decision Path")
+    reasoning_step = first_section_item(sections, "Solve Process") or first_section_item(sections, "Decision Path")
     primary_check = first_section_item(sections, "Checks")
     primary_fix = first_section_item(sections, "Resolution")
-    confirmation_step = (sections.get("Resolution") or [""])[1] or (sections.get("Checks") or ["", ""])[1]
+    confirmation_step = first_section_item(sections, "Verification Plan") or (sections.get("Resolution") or ["", ""])[1] or (sections.get("Checks") or ["", ""])[1]
     escalation = first_section_item(sections, "Escalate If")
 
     steps.append(f"Stabilize scope in {environment}: confirm the affected users, business step, and exact symptom for {incident}.")
@@ -937,13 +946,25 @@ def build_technical_handoff(query, sections, environment):
     if checks:
         lines.append(f"Checks completed or recommended: {checks}")
 
+    solve_process = join_section_items(sections.get("Solve Process"), limit=2)
+    if solve_process:
+        lines.append(f"Detailed solve process: {solve_process}")
+
     resolution = join_section_items(sections.get("Resolution"), limit=3)
     if resolution:
         lines.append(f"Resolution path: {resolution}")
 
+    verification = join_section_items(sections.get("Verification Plan"), limit=2)
+    if verification:
+        lines.append(f"Verification plan: {verification}")
+
     escalation = join_section_items(sections.get("Escalate If"), limit=2)
     if escalation:
         lines.append(f"Escalation conditions: {escalation}")
+
+    live_data = join_section_items(sections.get("Live Data Usage"), limit=2)
+    if live_data:
+        lines.append(f"Live data usage: {live_data}")
 
     return "\n".join(lines)
 
@@ -1912,6 +1933,27 @@ def build_mixed_issue_answer(query, context_snippets, context_source, environmen
         matches=[],
         universal_patterns=[],
     )
+    solve_process = build_solve_process(
+        "mixed SAP incident",
+        environment,
+        system_context,
+        reasoning=reasoning,
+        checks=shared_checks,
+        resolution=shared_resolution,
+    )
+    verification_plan = build_verification_plan(
+        environment,
+        best_tcodes,
+        system_context,
+        analysis_context=analysis_context,
+        checks=shared_checks,
+        resolution=shared_resolution,
+    )
+    live_data_usage = build_live_data_usage(
+        context_snippets,
+        context_source,
+        analysis_context=analysis_context,
+    )
 
     return f"""Incident
 - Mixed SAP incident with multiple likely failure domains
@@ -1937,6 +1979,15 @@ Required Inputs
 {build_analysis_section(analysis_context)}
 
 {build_reasoning_sections(reasoning)}
+
+Solve Process
+{format_list(solve_process, "Work each workstream in a controlled SAP troubleshooting sequence.")}
+
+Verification Plan
+{format_list(verification_plan, "Retest the exact failed business step after the corrective action.")}
+
+Live Data Usage
+{format_list(live_data_usage, "Grounded SAP runtime evidence was used for this answer.")}
 
 Issue Mix
 {format_list(issue_mix, "No mixed-issue breakdown was derived.")}
@@ -1976,7 +2027,10 @@ def build_context(matches, query, include_vector=False):
 
     if note_matches:
         snippets.extend(shorten_text(note, limit=420) for note in note_matches)
-        sources.append("local SAP ticket notes")
+        local_source = "local SAP corpus"
+        if (BASE_DIR / "sap_web_data.txt").exists():
+            local_source = "local SAP corpus + public SAP web corpus"
+        sources.append(local_source)
 
     if include_vector:
         vector_matches = search_vector_context(query)
@@ -1991,6 +2045,51 @@ def build_context(matches, query, include_vector=False):
         sources.append("structured SAP ticket catalog")
 
     return snippets[:4], ", ".join(dict.fromkeys(sources))
+
+
+def should_use_live_vector_context(query, analysis_context=None):
+    if not is_vector_context_enabled() or not INDEX_PATH.exists():
+        return False
+
+    entities = (analysis_context or {}).get("entities", {})
+    exact_signal_keys = [
+        "tcodes",
+        "transports",
+        "status_codes",
+        "http_codes",
+        "return_codes",
+        "queues",
+        "idocs",
+        "users",
+        "jobs",
+        "programs",
+        "objects",
+    ]
+    if any(entities.get(key) for key in exact_signal_keys):
+        return True
+
+    if (analysis_context or {}).get("ocr_text"):
+        return True
+
+    lowered = str(query or "").lower()
+    high_value_terms = [
+        "http",
+        "status",
+        "dump",
+        "short dump",
+        "idoc",
+        "queue",
+        "transport",
+        "workflow",
+        "pricing",
+        "lock",
+        "authorization",
+        "odata",
+        "api",
+        "rfc",
+        "bapi",
+    ]
+    return len(lowered.split()) >= 8 or any(term in lowered for term in high_value_terms)
 
 
 def format_list(items, default_message):
@@ -2076,6 +2175,112 @@ def build_reasoning_sections(reasoning):
         f"Decision Path\n"
         f"{format_list(reasoning.get('decision_path'), 'No decision path was derived.')}"
     )
+
+
+def build_solve_process(incident, environment, system_context, reasoning=None, checks=None, resolution=None):
+    process_lines = [
+        f"Confirm the exact failing scope for {incident} in {environment} before changing roles, transports, interfaces, or master data.",
+    ]
+
+    if system_context.get("system_label"):
+        scope = system_context["system_label"]
+        subsystem = system_context.get("subsystem_label")
+        if subsystem and subsystem != scope:
+            scope = f"{scope} / {subsystem}"
+        process_lines.append(f"Keep the investigation inside the owning SAP boundary first: {scope}.")
+
+    if reasoning and reasoning.get("failure_chain"):
+        process_lines.append(f"Trace the first failing layer: {reasoning['failure_chain'][0]}")
+    elif reasoning and reasoning.get("diagnosis_lines"):
+        process_lines.append(reasoning["diagnosis_lines"][0])
+
+    if checks:
+        process_lines.append(f"Run the primary diagnostic step first: {checks[0]}")
+    if len(checks or []) > 1:
+        process_lines.append(f"Use the secondary check to confirm the diagnosis, not to guess: {checks[1]}")
+    if resolution:
+        process_lines.append(f"Apply the least risky corrective action only after the evidence is stable: {resolution[0]}")
+    if len(resolution or []) > 1:
+        process_lines.append(f"Retest the impacted process and any downstream dependency immediately after the fix: {resolution[1]}")
+
+    return extend_unique(process_lines, [], limit=6)
+
+
+def build_verification_plan(environment, best_tcodes, system_context, analysis_context=None, checks=None, resolution=None):
+    verification_lines = [
+        "Retest the exact failing business step with the same user, document, app, and time-sensitive context.",
+    ]
+
+    if best_tcodes:
+        verification_lines.append(f"Capture before-and-after technical evidence with {', '.join(best_tcodes[:2])}.")
+
+    entities = (analysis_context or {}).get("entities", {})
+    if entities.get("idocs") or entities.get("queues") or entities.get("status_codes"):
+        verification_lines.append("Confirm that queues, IDocs, and status records clear cleanly after the fix instead of staying in retry or error state.")
+    if entities.get("http_codes"):
+        verification_lines.append("Re-open the same app or endpoint and confirm the HTTP failure is gone without introducing a new backend error.")
+    if entities.get("users"):
+        verification_lines.append("Validate the outcome with the original affected user and one comparison user if the issue is role-sensitive.")
+
+    if system_context.get("integration_points"):
+        verification_lines.append(f"Check downstream integration health for {system_context['integration_points'][0]} after the main symptom is resolved.")
+
+    if environment == "PROD":
+        verification_lines.append("In PROD, use controlled validation only and record operator or business confirmation before closing the ticket.")
+    else:
+        verification_lines.append(f"In {environment}, add one adjacent happy-path test before marking the issue as solved.")
+
+    if resolution:
+        verification_lines.append(f"Close the incident only after confirming the fix path remains stable: {resolution[0]}")
+
+    return extend_unique(verification_lines, [], limit=7)
+
+
+def build_live_data_usage(context_snippets, context_source, analysis_context=None):
+    live_lines = [
+        f"Generated on {datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')} using {context_source or 'the grounded SAP runtime'}.",
+    ]
+
+    corpus_sources = []
+    if (BASE_DIR / "sap_tickets.txt").exists():
+        corpus_sources.append("local SAP ticket notes")
+    if (BASE_DIR / "sap_dataset.txt").exists():
+        corpus_sources.append("bundled SAP dataset")
+    if (BASE_DIR / "sap_web_data.txt").exists():
+        corpus_sources.append("public SAP web corpus")
+    if corpus_sources:
+        live_lines.append(f"Available retrieval sources: {', '.join(corpus_sources[:3])}.")
+
+    if context_snippets:
+        live_lines.append(f"Top supporting evidence: {shorten_text(context_snippets[0], limit=220)}")
+
+    if "FAISS knowledge base" in str(context_source):
+        live_lines.append("Vector similarity search was used to pull deeper FAISS context for this answer.")
+    elif is_vector_context_enabled() and INDEX_PATH.exists():
+        live_lines.append("FAISS vector context is available and can be used for deeper issue-specific retrieval when the ticket carries enough exact evidence.")
+
+    if router_model_available():
+        training_status = load_training_status()
+        accuracy = float(training_status.get("best_val_accuracy") or 0.0)
+        if accuracy > 0:
+            live_lines.append(f"Trained SAP router is active with validation accuracy {accuracy:.2%}.")
+        else:
+            live_lines.append("Trained SAP router is active for playbook selection.")
+
+    entities = (analysis_context or {}).get("entities", {})
+    evidence = []
+    for key in ["tcodes", "transports", "status_codes", "http_codes", "queues", "idocs", "users"]:
+        values = entities.get(key) or []
+        evidence.extend(values[:2])
+    if evidence:
+        live_lines.append(f"Live issue signals used in this pass: {', '.join(dict.fromkeys(evidence))}.")
+
+    if (analysis_context or {}).get("ocr_text"):
+        live_lines.append("OCR evidence from the uploaded screenshot was included in the issue analysis.")
+    if (analysis_context or {}).get("semantic_matches"):
+        live_lines.append("Neural similarity matching contributed extra SAP pattern evidence for ranking and diagnosis.")
+
+    return extend_unique(live_lines, [], limit=7)
 
 
 def has_specific_scope(label):
@@ -2457,9 +2662,9 @@ Retrieved SAP context:
 Context sources:
 {context_source}
 
-Return a concise ticket-resolution playbook that preserves the section headings already present
+Return a detailed but practical ticket-resolution playbook that preserves the section headings already present
 in the local runbook answer whenever possible. Keep the response safe for enterprise SAP
-operations, especially for production systems.
+operations, especially for production systems, and make the solve process and verification logic explicit.
 """.strip()
 
 
@@ -2483,6 +2688,9 @@ def condense_playbook_for_local_llm(base_answer):
         "NLP Signals",
         "Neural Matches",
         "Image Findings",
+        "Solve Process",
+        "Verification Plan",
+        "Live Data Usage",
         "Environment",
         "Environment Guidance",
         "Best T-codes",
@@ -2547,6 +2755,7 @@ Rules:
 - Use short bullets and at most 2 bullets per section.
 - Do not invent unsafe production actions or fake T-codes.
 - If the draft is already solid, lightly improve wording only.
+- Keep the solve process, verification logic, and live evidence usage explicit.
 
 Ticket:
 {query}
@@ -3041,7 +3250,11 @@ def build_solver_bundle(query, environment, system=None, subsystem=None, analysi
         system_context,
         analysis_context=analysis_context,
     )[:4]
-    context_snippets, context_source = build_context(matches, matching_query, include_vector=False)
+    context_snippets, context_source = build_context(
+        matches,
+        matching_query,
+        include_vector=should_use_live_vector_context(matching_query, analysis_context=analysis_context),
+    )
     reasoning = build_advanced_reasoning(
         matching_query,
         system_context,
@@ -3132,6 +3345,27 @@ def build_ticket_answer_from_bundle(bundle):
         analysis_context=analysis_context,
         system_context=system_context,
     )
+    solve_process = build_solve_process(
+        ticket["title"],
+        resolved_environment,
+        system_context,
+        reasoning=reasoning,
+        checks=ticket["checks"],
+        resolution=ticket["resolution"],
+    )
+    verification_plan = build_verification_plan(
+        resolved_environment,
+        best_tcodes,
+        system_context,
+        analysis_context=analysis_context,
+        checks=ticket["checks"],
+        resolution=ticket["resolution"],
+    )
+    live_data_usage = build_live_data_usage(
+        context_snippets,
+        context_source,
+        analysis_context=analysis_context,
+    )
 
     reason_lines = best_match["reasons"][:3] or ["matched the closest SAP incident pattern available"]
     context_preview = context_snippets[0] if context_snippets else "No additional note snippet was available."
@@ -3160,6 +3394,15 @@ Required Inputs
 {build_analysis_section(analysis_context)}
 
 {build_reasoning_sections(reasoning)}
+
+Solve Process
+{format_list(solve_process, "Work the issue in a controlled SAP troubleshooting sequence.")}
+
+Verification Plan
+{format_list(verification_plan, "Retest the exact failed business step after the corrective action.")}
+
+Live Data Usage
+{format_list(live_data_usage, "Grounded SAP runtime evidence was used for this answer.")}
 
 Best T-codes
 {format_list(best_tcodes, "No T-code available")}
@@ -3316,6 +3559,27 @@ def build_generic_triage_answer(query, context_snippets, context_source, environ
         matches=[],
         universal_patterns=universal_patterns,
     )
+    solve_process = build_solve_process(
+        title,
+        environment,
+        system_context,
+        reasoning=reasoning,
+        checks=default_checks,
+        resolution=resolution_lines,
+    )
+    verification_plan = build_verification_plan(
+        environment,
+        best_tcodes,
+        system_context,
+        analysis_context=analysis_context,
+        checks=default_checks,
+        resolution=resolution_lines,
+    )
+    live_data_usage = build_live_data_usage(
+        context_snippets,
+        context_source,
+        analysis_context=analysis_context,
+    )
 
     return f"""Incident
 - {title}
@@ -3341,6 +3605,15 @@ Required Inputs
 {build_analysis_section(analysis_context)}
 
 {build_reasoning_sections(reasoning)}
+
+Solve Process
+{format_list(solve_process, "Work the issue in a controlled SAP troubleshooting sequence.")}
+
+Verification Plan
+{format_list(verification_plan, "Retest the exact failed business step after the corrective action.")}
+
+Live Data Usage
+{format_list(live_data_usage, "Grounded SAP runtime evidence was used for this answer.")}
 
 Guidance
 {format_list(guidance_lines, "Use adaptive SAP triage when the ticket does not map cleanly to one known runbook.")}
